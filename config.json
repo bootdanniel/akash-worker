@@ -1,0 +1,13 @@
+{
+  "tunnel_url": "https://mixed-strength-albums-blast.trycloudflare.com",
+  "github_repo": "bootdanniel/supernatural-24h",
+  "github_tag": "v1",
+  "tmdb": "1622",
+  "seasons": [
+    {"numero": 11, "episodios": 23},
+    {"numero": 12, "episodios": 23},
+    {"numero": 13, "episodios": 23},
+    {"numero": 14, "episodios": 20},
+    {"numero": 15, "episodios": 20}
+  ]
+}
