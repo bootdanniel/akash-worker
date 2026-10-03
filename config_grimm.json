@@ -1,0 +1,33 @@
+{
+  "tunnel_url": "https://higher-isle-chen-semiconductor.trycloudflare.com",
+  "github_repo": "bootdanniel/grimm24h",
+  "github_tag": "v1",
+  "tmdb": "39351",
+  "nome_template": "temp_{t}__ep{e:02d}.mp4",
+  "seasons": [
+    {
+      "numero": 1,
+      "episodios": 22
+    },
+    {
+      "numero": 2,
+      "episodios": 22
+    },
+    {
+      "numero": 3,
+      "episodios": 22
+    },
+    {
+      "numero": 4,
+      "episodios": 22
+    },
+    {
+      "numero": 5,
+      "episodios": 22
+    },
+    {
+      "numero": 6,
+      "episodios": 13
+    }
+  ]
+}
