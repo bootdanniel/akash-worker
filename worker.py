@@ -82,7 +82,7 @@ def main():
             continue
 
         tunnel = cfg["tunnel_url"].rstrip("/")
-        token  = cfg["github_token"]
+        token  = os.environ.get("GH_TOKEN", "")
         repo   = cfg["github_repo"]
         tag    = cfg["github_tag"]
         tmdb   = cfg["tmdb"]
