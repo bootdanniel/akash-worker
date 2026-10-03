@@ -110,7 +110,7 @@ def main():
         for s in cfg["seasons"]:
             t = s["numero"]
             for e in range(1, s["episodios"]+1):
-                nome = f"Sobrenatural_S{t}_EP{e:02d}.mp4"
+                nome = cfg.get("nome_template", "temp_{t}__ep{e:02d}.mp4").format(t=t, e=e)
                 if nome not in existentes:
                     pendentes.append((t, e, nome))
 
