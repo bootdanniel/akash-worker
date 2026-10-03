@@ -23,7 +23,7 @@ def listar_github(token, repo, tag):
     env["GH_TOKEN"] = token
     r = subprocess.run(
         ["gh", "release", "view", tag, "--repo", repo, "--json", "assets"],
-        env=env, capture_output=True, text=True
+        env=env, capture_output=True, text=True, timeout=60
     )
     if r.returncode != 0:
         print(f"  ⚠️  {r.stderr.strip()[:200]}")
@@ -67,7 +67,7 @@ def upload(token, repo, tag, arquivo, nome):
     env["GH_TOKEN"] = token
     r = subprocess.run(
         ["gh", "release", "upload", tag, arquivo, "--repo", repo, "--clobber"],
-        env=env, capture_output=True, text=True
+        env=env, capture_output=True, text=True, timeout=300
     )
     return r.returncode == 0, r.stderr
 
