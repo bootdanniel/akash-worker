@@ -3,7 +3,7 @@ import requests, time, os, sys, subprocess, json, re
 
 # ===== CONFIG =====
 CONFIGS = [
-    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_verificar.json",
+    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_recodificar.json",
 ]
 PASTA = "/tmp/videos"
 # ==================
@@ -265,6 +265,146 @@ def verificar_resolucoes(cfg):
         print(f"FALHA: {r.stderr}")
 
 
+
+def recodificar_eps(cfg):
+    """Modo: baixa EP do GitHub, recodifica pra 1280x720, deleta, sobe de volta."""
+    import shutil
+
+    token = os.environ.get("GH_TOKEN", "")
+    repo = cfg["github_repo"]
+    tag = cfg["github_tag"]
+    lista = cfg["eps_recodificar"]
+    crf = cfg.get("crf", 23)
+    preset = cfg.get("preset", "veryfast")
+
+    print(f"=== MODO RECODIFICAR ===")
+    print(f"Repo:   {repo} ({tag})")
+    print(f"Total:  {len(lista)} EPs")
+    print(f"CRF:    {crf}  |  preset: {preset}")
+    print()
+
+    env = os.environ.copy()
+    env["GH_TOKEN"] = token
+
+    # Lista de URLs atuais
+    print("Buscando URLs dos assets...")
+    r = subprocess.run(
+        ["gh", "release", "view", tag, "--repo", repo, "--json", "assets"],
+        env=env, capture_output=True, text=True, timeout=60
+    )
+    if r.returncode != 0:
+        print(f"ERRO: {r.stderr}")
+        return
+    assets = {a["name"]: a["url"] for a in json.loads(r.stdout).get("assets", [])}
+    print(f"  {len(assets)} assets disponiveis")
+    print()
+
+    ok = 0
+    falhas = []
+
+    for i, nome in enumerate(lista, 1):
+        print(f"\n{'='*60}")
+        print(f"  [{i}/{len(lista)}] {nome}")
+        print(f"{'='*60}")
+
+        if nome not in assets:
+            print(f"  SKIP: nao encontrado no release")
+            falhas.append(f"{nome}: nao encontrado")
+            continue
+
+        url_in = assets[nome]
+        tmp_in  = f"/tmp/{nome}"
+        tmp_out = f"/tmp/recode_{nome}"
+
+        # 1) Baixa
+        print(f"  [1/5] Baixando...")
+        try:
+            with requests.get(url_in, stream=True, timeout=300) as r:
+                r.raise_for_status()
+                total = int(r.headers.get("content-length", 0))
+                b = 0
+                with open(tmp_in, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=4*1024*1024):
+                        f.write(chunk); b += len(chunk)
+                        if total and b % (20*1024*1024) < 4*1024*1024:
+                            print(f"\r    {b*100//total}% ({b//1024//1024}/{total//1024//1024} MB)", end="")
+                print()
+            print(f"  OK: {os.path.getsize(tmp_in)//1024//1024} MB")
+        except Exception as ex:
+            print(f"  FALHA download: {ex}")
+            if os.path.exists(tmp_in): os.remove(tmp_in)
+            falhas.append(f"{nome}: download")
+            continue
+
+        # 2) Recodifica
+        print(f"  [2/5] Recodificando pra 1280x720 high profile...")
+        try:
+            cmd = [
+                "ffmpeg", "-y", "-i", tmp_in,
+                "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1:1",
+                "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.1",
+                "-preset", preset, "-crf", str(crf),
+                "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+                "-movflags", "+faststart",
+                tmp_out
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+            if r.returncode != 0:
+                print(f"  FALHA ffmpeg: {r.stderr[-500:]}")
+                if os.path.exists(tmp_in): os.remove(tmp_in)
+                falhas.append(f"{nome}: ffmpeg")
+                continue
+            print(f"  OK: {os.path.getsize(tmp_out)//1024//1024} MB")
+        except Exception as ex:
+            print(f"  FALHA recode: {ex}")
+            if os.path.exists(tmp_in): os.remove(tmp_in)
+            falhas.append(f"{nome}: recode {ex}")
+            continue
+
+        # 3) Apaga original do disco
+        try: os.remove(tmp_in)
+        except: pass
+
+        # 4) Deleta o asset antigo no GitHub
+        print(f"  [3/5] Deletando asset antigo do GitHub...")
+        r = subprocess.run(
+            ["gh", "release", "delete-asset", tag, nome, "--repo", repo, "--yes"],
+            env=env, capture_output=True, text=True, timeout=60
+        )
+        if r.returncode != 0:
+            print(f"  AVISO: {r.stderr.strip()[:150]}")
+        else:
+            print(f"  OK")
+
+        # 5) Sobe o recodificado
+        print(f"  [4/5] Subindo recodificado...")
+        r = subprocess.run(
+            ["gh", "release", "upload", tag, tmp_out, "--repo", repo, "--clobber"],
+            env=env, capture_output=True, text=True, timeout=600
+        )
+        if r.returncode != 0:
+            print(f"  FALHA upload: {r.stderr[:200]}")
+            falhas.append(f"{nome}: upload")
+            # Não apaga local, deixa pra debug
+            continue
+        print(f"  OK")
+
+        # 6) Apaga local
+        try: os.remove(tmp_out)
+        except: pass
+
+        ok += 1
+        print(f"  [5/5] ✅ {nome} RECODIFICADO E SUBIDO")
+
+    print(f"\n{'='*60}")
+    print(f"  RESUMO RECODIFICAR")
+    print(f"{'='*60}")
+    print(f"  OK:      {ok}/{len(lista)}")
+    print(f"  Falhas:  {len(falhas)}")
+    for f in falhas:
+        print(f"    - {f}")
+
+
 def main():
     print("="*60)
     print("  WORKER FILA — Múltiplas séries")
@@ -283,6 +423,8 @@ def main():
                 cfg_test = ler_config(url)
                 if cfg_test and cfg_test.get("modo") == "verificar":
                     verificar_resolucoes(cfg_test)
+                elif cfg_test and cfg_test.get("modo") == "recodificar":
+                    recodificar_eps(cfg_test)
                 else:
                     processar_config(url, i, len(CONFIGS))
             except Exception as e:

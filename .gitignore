@@ -1,0 +1,24 @@
+# Credenciais e configs locais
+deploy.yaml
+deploy.yaml.bak
+deploy.sh
+
+# Backups
+*.bak
+*.bak2
+config_antigo.bak
+
+# Arquivos de runtime
+.dseq
+bids.json
+deploy_response.json
+deploy_status.json
+lease_response.json
+resolucoes.txt
+
+# Logs
+*.log
+
+# Outros
+temp_*.mp4
+recode_*.mp4
