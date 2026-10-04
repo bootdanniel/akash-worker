@@ -1,7 +1,7 @@
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
-    python3 python3-pip curl git ca-certificates \
+    python3 python3-pip curl git ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Instala gh CLI

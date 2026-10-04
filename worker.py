@@ -3,8 +3,7 @@ import requests, time, os, sys, subprocess, json, re
 
 # ===== CONFIG =====
 CONFIGS = [
-    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_tapas.json",
-    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_grimm.json",
+    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_verificar.json",
 ]
 PASTA = "/tmp/videos"
 # ==================
@@ -153,6 +152,119 @@ def processar_config(cfg_url, cfg_num, cfg_total):
         except: pass
         time.sleep(3)
 
+
+def verificar_resolucoes(cfg):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from collections import defaultdict
+
+    token = os.environ.get("GH_TOKEN", "")
+    repo = cfg["github_repo"]
+    tag = cfg["github_tag"]
+    output_file = cfg.get("output_file", "resolucoes.txt")
+
+    print(f"=== MODO VERIFICAR ===")
+    print(f"Repo: {repo} ({tag})")
+
+    env = os.environ.copy()
+    env["GH_TOKEN"] = token
+
+    r = subprocess.run(
+        ["gh", "release", "view", tag, "--repo", repo, "--json", "assets"],
+        env=env, capture_output=True, text=True, timeout=60
+    )
+    if r.returncode != 0:
+        print(f"ERRO listando assets: {r.stderr}")
+        return
+
+    data = json.loads(r.stdout)
+    assets = data.get("assets", [])
+    print(f"Total de arquivos: {len(assets)}")
+
+    eps = [{"name": a["name"], "url": a["url"]} for a in assets if a["name"].endswith(".mp4")]
+    print(f"Videos .mp4: {len(eps)}")
+    if not eps:
+        print("Nada pra verificar.")
+        return
+
+    def checar(ep):
+        try:
+            r = subprocess.run(
+                ["ffprobe", "-v", "error",
+                 "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height,bit_rate",
+                 "-of", "csv=p=0",
+                 "-analyzeduration", "1000000",
+                 "-probesize", "500000",
+                 ep["url"]],
+                capture_output=True, text=True, timeout=60
+            )
+            if r.returncode != 0:
+                return (ep["name"], "ERRO", "")
+            parts = r.stdout.strip().split(",")
+            w, h = parts[0], parts[1]
+            br = parts[2] if len(parts) > 2 else "?"
+            return (ep["name"], f"{w}x{h}", br)
+        except Exception as e:
+            return (ep["name"], f"ERRO:{e}", "")
+
+    print("Rodando ffprobe em paralelo (4 workers)...")
+    resultados = []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = [ex.submit(checar, ep) for ep in eps]
+        for i, f in enumerate(as_completed(futures), 1):
+            nome, res, br = f.result()
+            resultados.append({"name": nome, "res": res, "br": br})
+            if i % 10 == 0 or i == len(eps):
+                print(f"  [{i}/{len(eps)}] {nome} -> {res}")
+
+    por_res = defaultdict(list)
+    for r in resultados:
+        por_res[r["res"]].append(r["name"])
+
+    linhas = []
+    linhas.append("=" * 70)
+    linhas.append("  RESOLUCOES DOS EPISODIOS")
+    linhas.append("=" * 70)
+    linhas.append("")
+    linhas.append(f"Total: {len(resultados)} episodios")
+    linhas.append("")
+    linhas.append("=" * 70)
+    linhas.append("  AGRUPAMENTO POR RESOLUCAO")
+    linhas.append("=" * 70)
+    linhas.append("")
+    for res, lista in sorted(por_res.items(), key=lambda x: -len(x[1])):
+        linhas.append(f"### {res} ({len(lista)} eps)")
+        for n in sorted(lista):
+            linhas.append(f"  {n}")
+        linhas.append("")
+    linhas.append("=" * 70)
+    linhas.append("  RESUMO")
+    linhas.append("=" * 70)
+    for res, lista in sorted(por_res.items(), key=lambda x: -len(x[1])):
+        linhas.append(f"  {res}: {len(lista)} eps")
+
+    conteudo = "\n".join(linhas)
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(conteudo)
+
+    print(f"\nSalvo local: {output_file}")
+    print("=" * 40)
+    print(conteudo[:3000])
+    print("=" * 40)
+
+    print(f"Subindo {output_file} pro GitHub...")
+    r = subprocess.run(
+        ["gh", "release", "upload", tag, output_file,
+         "--repo", repo, "--clobber"],
+        env=env, capture_output=True, text=True, timeout=300
+    )
+    if r.returncode == 0:
+        print(f"OK: {output_file} enviado")
+    else:
+        print(f"FALHA: {r.stderr}")
+
+
 def main():
     print("="*60)
     print("  WORKER FILA — Múltiplas séries")
@@ -168,9 +280,13 @@ def main():
 
         for i, url in enumerate(CONFIGS, 1):
             try:
-                processar_config(url, i, len(CONFIGS))
+                cfg_test = ler_config(url)
+                if cfg_test and cfg_test.get("modo") == "verificar":
+                    verificar_resolucoes(cfg_test)
+                else:
+                    processar_config(url, i, len(CONFIGS))
             except Exception as e:
-                print(f"❌ Erro no config {i}: {e}")
+                print(f"Erro no config {i}: {e}")
 
         print(f"\n⏸  Ciclo completo. Esperando 5 min pra reler tudo...")
         time.sleep(300)
