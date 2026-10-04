@@ -65,7 +65,7 @@ def upload(token, repo, tag, arquivo, nome):
     env = os.environ.copy()
     env["GH_TOKEN"] = token
     r = subprocess.run(
-        ["gh", "release", "upload", tag, arquivo, "--repo", repo, "--clobber"],
+        ["gh", "release", "upload", tag, arquivo, "--repo", repo, "--clobber", f"--name={nome}"],
         env=env, capture_output=True, text=True, timeout=300
     )
     return r.returncode == 0, r.stderr
@@ -256,7 +256,7 @@ def verificar_resolucoes(cfg):
     print(f"Subindo {output_file} pro GitHub...")
     r = subprocess.run(
         ["gh", "release", "upload", tag, output_file,
-         "--repo", repo, "--clobber"],
+         "--repo", repo, "--clobber", f"--name={nome}"],
         env=env, capture_output=True, text=True, timeout=300
     )
     if r.returncode == 0:
@@ -424,7 +424,7 @@ def recodificar_eps(cfg):
         # 5) Sobe o recodificado
         print(f"  [4/5] Subindo recodificado...")
         r = subprocess.run(
-            ["gh", "release", "upload", tag, tmp_out, "--repo", repo, "--clobber"],
+            ["gh", "release", "upload", tag, tmp_out, "--repo", repo, "--clobber", f"--name={nome}"],
             env=env, capture_output=True, text=True, timeout=600
         )
         if r.returncode != 0:
