@@ -266,6 +266,41 @@ def verificar_resolucoes(cfg):
 
 
 
+
+def carregar_progresso(token, repo, tag):
+    """Lê recodificados.json do GitHub. Retorna set de EPs já processados."""
+    env = os.environ.copy()
+    env["GH_TOKEN"] = token
+    # Tenta baixar do release
+    try:
+        url = f"https://github.com/{repo}/releases/download/{tag}/recodificados.json"
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            return set(r.json())
+    except: pass
+    return set()
+
+
+def salvar_progresso(token, repo, tag, processados, nome_arquivo="recodificados.json"):
+    """Salva o set de EPs processados no GitHub."""
+    import tempfile
+    env = os.environ.copy()
+    env["GH_TOKEN"] = token
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    try:
+        json.dump(sorted(list(processados)), tmp, indent=2)
+        tmp.close()
+        r = subprocess.run(
+            ["gh", "release", "upload", tag, tmp.name, "--repo", repo,
+             "--clobber", f"--name={nome_arquivo}"],
+            env=env, capture_output=True, text=True, timeout=60
+        )
+        return r.returncode == 0
+    finally:
+        try: os.remove(tmp.name)
+        except: pass
+
+
 def recodificar_eps(cfg):
     """Modo: baixa EP do GitHub, recodifica pra 1280x720, deleta, sobe de volta."""
     import shutil
@@ -302,10 +337,20 @@ def recodificar_eps(cfg):
     ok = 0
     falhas = []
 
+    # Carrega progresso
+    ja_feitos = carregar_progresso(token, repo, tag)
+    print(f"Ja processados em rodadas anteriores: {len(ja_feitos)}")
+    print()
+
     for i, nome in enumerate(lista, 1):
         print(f"\n{'='*60}")
         print(f"  [{i}/{len(lista)}] {nome}")
         print(f"{'='*60}")
+
+        if nome in ja_feitos:
+            print(f"  SKIP: ja processado em rodada anterior")
+            ok += 1
+            continue
 
         if nome not in assets:
             print(f"  SKIP: nao encontrado no release")
@@ -394,7 +439,9 @@ def recodificar_eps(cfg):
         except: pass
 
         ok += 1
-        print(f"  [5/5] ✅ {nome} RECODIFICADO E SUBIDO")
+        ja_feitos.add(nome)
+        salvar_progresso(token, repo, tag, ja_feitos)
+        print(f"  [5/5] ✅ {nome} RECODIFICADO E SUBIDO (progresso salvo)")
 
     print(f"\n{'='*60}")
     print(f"  RESUMO RECODIFICAR")
