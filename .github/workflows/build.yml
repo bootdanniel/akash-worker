@@ -1,40 +1,23 @@
-name: Build and Push to ghcr.io
-
+name: build-worker
 on:
   push:
-    branches: [ main ]
-    tags: [ 'v*' ]
+    branches: [main]
+    paths: ["Dockerfile", "worker_watermark.py", ".github/workflows/build.yml"]
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Login no ghcr.io
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Define tags
-        id: meta
-        run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "TAGS=ghcr.io/${{ github.repository_owner }}/akash-worker:${{ github.ref_name }},ghcr.io/${{ github.repository_owner }}/akash-worker:latest" >> $GITHUB_OUTPUT
-          else
-            echo "TAGS=ghcr.io/${{ github.repository_owner }}/akash-worker:latest" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build e push
-        uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v5
         with:
-          context: .
           push: true
-          tags: ${{ steps.meta.outputs.TAGS }}
+          tags: ghcr.io/bootdanniel/akash-worker:watermark
