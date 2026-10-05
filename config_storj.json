@@ -3,9 +3,9 @@
   "tunnel_url": "https://both-example-full-quit.trycloudflare.com",
   "storj": {
     "endpoint": "https://gateway.storjshare.io",
-    "access_key": "jxqhb5pgc5gt3ca2bb26dgwlqhqa",
-    "secret_key": "jy25itwuf2lnld6f6rmwruc7jitc2ic2zezdwesctlduz5d5h74dq",
-    "bucket": "filmes-top"
+    "access_key": "jux4qyhuvrta37tkcii45qst3pqa",
+    "secret_key": "jz3arklvjx75ttw37p5ptavtah2iqjgrz5gequ6rxdksm7ao3ommc",
+    "bucket": "filmestopa"
   },
   "filmes": [
     {

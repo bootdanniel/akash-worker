@@ -569,7 +569,11 @@ def upload_storj(arquivo, nome_remoto, cfg_storj):
         aws_access_key_id=cfg_storj["access_key"],
         aws_secret_access_key=cfg_storj["secret_key"],
         endpoint_url=cfg_storj["endpoint"],
-        config=BotoConfig(signature_version="s3v4"),
+        config=BotoConfig(
+            signature_version="s3v4",
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+        ),
         region_name="us-east-1",
     )
     try:
