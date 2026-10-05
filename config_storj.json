@@ -1,0 +1,78 @@
+{
+  "modo": "baixar_top_storj",
+  "tunnel_url": "https://both-example-full-quit.trycloudflare.com",
+  "storj": {
+    "endpoint": "https://gateway.storjshare.io",
+    "access_key": "jxqhb5pgc5gt3ca2bb26dgwlqhqa",
+    "secret_key": "jy25itwuf2lnld6f6rmwruc7jitc2ic2zezdwesctlduz5d5h74dq",
+    "bucket": "filmes-top"
+  },
+  "filmes": [
+    {
+      "tmdb": 980431,
+      "titulo": "Avatar Aang: O Último Mestre do Ar",
+      "ano": "2026",
+      "tamanho_mb": 2134
+    },
+    {
+      "tmdb": 1007757,
+      "titulo": "Como Mágica",
+      "ano": "2026",
+      "tamanho_mb": 2163
+    },
+    {
+      "tmdb": 1311031,
+      "titulo": "Demon Slayer: Kimetsu no Yaiba Castelo Infinito",
+      "ano": "2025",
+      "tamanho_mb": 3301
+    },
+    {
+      "tmdb": 278,
+      "titulo": "Um Sonho de Liberdade",
+      "ano": "1994",
+      "tamanho_mb": 1615
+    },
+    {
+      "tmdb": 238,
+      "titulo": "O Poderoso Chefão",
+      "ano": "1972",
+      "tamanho_mb": 2095
+    },
+    {
+      "tmdb": 687163,
+      "titulo": "Devoradores de Estrelas",
+      "ano": "2026",
+      "tamanho_mb": 3262
+    },
+    {
+      "tmdb": 936075,
+      "titulo": "Michael",
+      "ano": "2026",
+      "tamanho_mb": 2684
+    },
+    {
+      "tmdb": 424,
+      "titulo": "A Lista de Schindler",
+      "ano": "1993",
+      "tamanho_mb": 1791
+    },
+    {
+      "tmdb": 389,
+      "titulo": "12 Homens e uma Sentença",
+      "ano": "1957",
+      "tamanho_mb": 708
+    },
+    {
+      "tmdb": 240,
+      "titulo": "O Poderoso Chefão: Parte II",
+      "ano": "1974",
+      "tamanho_mb": 2391
+    },
+    {
+      "tmdb": 1218925,
+      "titulo": "Chainsaw Man – O Filme: Arco da Reze",
+      "ano": "2025",
+      "tamanho_mb": 2126
+    }
+  ]
+}

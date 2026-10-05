@@ -12,7 +12,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --break-system-packages requests
+RUN pip3 install --break-system-packages requests boto3
 
 WORKDIR /app
 COPY worker.py /app/worker.py

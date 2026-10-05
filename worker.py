@@ -3,7 +3,7 @@ import requests, time, os, sys, subprocess, json, re
 
 # ===== CONFIG =====
 CONFIGS = [
-    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_catalogo.json",
+    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_storj.json",
 ]
 PASTA = "/tmp/videos"
 # ==================
@@ -557,6 +557,131 @@ def catalogar(cfg):
     print(f"{'='*60}")
 
 
+
+def upload_storj(arquivo, nome_remoto, cfg_storj):
+    """Sobe arquivo pro STORJ via S3 API."""
+    import boto3
+    from botocore.config import Config as BotoConfig
+
+    session = boto3.session.Session()
+    s3 = session.client(
+        service_name="s3",
+        aws_access_key_id=cfg_storj["access_key"],
+        aws_secret_access_key=cfg_storj["secret_key"],
+        endpoint_url=cfg_storj["endpoint"],
+        config=BotoConfig(signature_version="s3v4"),
+        region_name="us-east-1",
+    )
+    try:
+        s3.upload_file(arquivo, cfg_storj["bucket"], nome_remoto)
+        return True
+    except Exception as e:
+        print(f"    ❌ STORJ erro: {e}")
+        return False
+
+
+def baixar_top_storj(cfg):
+    """Baixa filmes TOP via ponte e sobe pro STORJ."""
+    import time as _t
+
+    tunnel = cfg["tunnel_url"].rstrip("/")
+    cfg_storj = cfg["storj"]
+    lista = cfg["filmes"]
+
+    print(f"=== MODO BAIXAR_TOP_STORJ ===")
+    print(f"Túnel: {tunnel}")
+    print(f"STORJ: {cfg_storj['endpoint']} | bucket: {cfg_storj['bucket']}")
+    print(f"Filmes a baixar: {len(lista)}")
+    print()
+
+    # Testa ponte
+    try:
+        r = requests.get(f"{tunnel}/health", timeout=15)
+        print(f"✅ Ponte online: {r.json()}")
+    except Exception as e:
+        print(f"❌ Ponte offline: {e}")
+        return
+
+    # Prepara pasta temp
+    os.makedirs("/tmp/videos_top", exist_ok=True)
+
+    ok = 0
+    falhas = []
+
+    for i, f in enumerate(lista, 1):
+        tmdb = f["tmdb"]
+        titulo = f["titulo"]
+        ano = f.get("ano", "")
+        print(f"\n{'='*60}")
+        print(f"  [{i}/{len(lista)}] {titulo} ({ano}) [tmdb {tmdb}]")
+        print(f"{'='*60}")
+
+        # Nome do arquivo no STORJ
+        nome_limpo = re.sub(r'[^A-Za-z0-9_-]', '_', titulo)[:50]
+        nome_arquivo = f"{nome_limpo}_{ano}_{tmdb}.mp4"
+        destino_local = f"/tmp/videos_top/{nome_arquivo}"
+
+        # 1) Pede link pra ponte
+        print(f"  [1/3] Pedindo link pra ponte...")
+        mp4_url = None
+        for tent in range(3):
+            try:
+                r = requests.get(f"{tunnel}/resolver/{tmdb}", timeout=30)
+                d = r.json()
+                if d.get("mp4"):
+                    mp4_url = d["mp4"]
+                    break
+            except: pass
+            time.sleep(3)
+
+        if not mp4_url:
+            print(f"  ❌ Sem link")
+            falhas.append(f"{titulo}: sem link")
+            continue
+
+        # 2) Baixa do MediaFire
+        print(f"  [2/3] Baixando {f.get('tamanho_mb', '?')} MB...")
+        try:
+            h = {"User-Agent": "Mozilla/5.0", "Referer": "https://1take.top/"}
+            with requests.get(mp4_url, headers=h, stream=True, timeout=180) as r:
+                r.raise_for_status()
+                total = int(r.headers.get("content-length", 0))
+                baixado = 0
+                with open(destino_local, "wb") as fp:
+                    for chunk in r.iter_content(chunk_size=4*1024*1024):
+                        fp.write(chunk); baixado += len(chunk)
+                        if total:
+                            pct = baixado * 100 // total
+                            print(f"\r      {pct}% ({baixado//1024//1024}/{total//1024//1024} MB)", end="", flush=True)
+                print()
+            sz = os.path.getsize(destino_local) // 1024 // 1024
+            print(f"  ✅ Baixado: {sz} MB")
+        except Exception as e:
+            print(f"  ❌ Erro no download: {e}")
+            if os.path.exists(destino_local): os.remove(destino_local)
+            falhas.append(f"{titulo}: erro download")
+            continue
+
+        # 3) Sobe pro STORJ
+        print(f"  [3/3] Subindo pro STORJ...")
+        if upload_storj(destino_local, nome_arquivo, cfg_storj):
+            print(f"  ✅ Enviado: {nome_arquivo}")
+            ok += 1
+        else:
+            falhas.append(f"{titulo}: erro STORJ")
+
+        # Apaga local
+        try: os.remove(destino_local)
+        except: pass
+
+    print(f"\n{'='*60}")
+    print(f"  RESUMO")
+    print(f"{'='*60}")
+    print(f"  ✅ OK: {ok}/{len(lista)}")
+    print(f"  ❌ Falhas: {len(falhas)}")
+    for f in falhas: print(f"    - {f}")
+
+
 def main():
     print("="*60)
     print("  WORKER FILA — Múltiplas séries")
@@ -580,6 +705,11 @@ def main():
                 elif cfg_test and cfg_test.get("modo") == "catalogar":
                     catalogar(cfg_test)
                     print("\n✅ Catalogação feita. Sai em 60s...")
+                    time.sleep(60)
+                    sys.exit(0)
+                elif cfg_test and cfg_test.get("modo") == "baixar_top_storj":
+                    baixar_top_storj(cfg_test)
+                    print("\n✅ Download completo. Sai em 60s...")
                     time.sleep(60)
                     sys.exit(0)
                 else:
