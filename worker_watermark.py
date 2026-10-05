@@ -46,6 +46,25 @@ def ensure_repo(repo):
         log("erro criando repo:", r.status_code, r.text[:300]); sys.exit(1)
     time.sleep(3)
 
+
+def ensure_initial_commit(repo):
+    """GitHub nao deixa criar Release em repo vazio. Faz commit inicial."""
+    r = gh("GET", f"/repos/{repo}/contents/README.md")
+    if r.status_code == 200:
+        return
+    import base64
+    content = base64.b64encode(b"# live24 com marca d'agua\n").decode()
+    r = gh("PUT", f"/repos/{repo}/contents/README.md", json={
+        "message": "init",
+        "content": content,
+        "branch": "main"
+    })
+    if r.status_code in (200, 201):
+        log("commit inicial criado")
+    else:
+        log("aviso init:", r.status_code, r.text[:200])
+    time.sleep(2)
+
 def ensure_release(repo, tag):
     r = gh("GET", f"/repos/{repo}/releases/tags/{tag}")
     if r.status_code == 200:
@@ -101,6 +120,7 @@ def main():
     log(f"logo: {os.path.getsize(logo)} bytes")
 
     ensure_repo(REPO_DEST)
+    ensure_initial_commit(REPO_DEST)
     release_id = ensure_release(REPO_DEST, TAG_DEST)
 
     orig = [a for a in list_assets(REPO_ORIG, TAG_ORIG) if a["name"].endswith(".mp4")]
