@@ -423,8 +423,17 @@ def recodificar_eps(cfg):
 
         # 5) Sobe o recodificado
         print(f"  [4/5] Subindo recodificado...")
+        # Renomeia o arquivo local pro nome correto ANTES de subir
+        import shutil as _sh
+        tmp_final = f"/tmp/{nome}"
+        try:
+            _sh.move(tmp_out, tmp_final)
+        except Exception as _e:
+            print(f"  ❌ erro movendo: {_e}")
+            continue
+
         r = subprocess.run(
-            ["gh", "release", "upload", tag, tmp_out, "--repo", repo, "--clobber", f"--name={nome}"],
+            ["gh", "release", "upload", tag, tmp_final, "--repo", repo, "--clobber"],
             env=env, capture_output=True, text=True, timeout=600
         )
         if r.returncode != 0:
