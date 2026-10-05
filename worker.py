@@ -3,7 +3,7 @@ import requests, time, os, sys, subprocess, json, re
 
 # ===== CONFIG =====
 CONFIGS = [
-    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_storj.json",
+    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_recuperar.json",
 ]
 PASTA = os.path.expanduser("~/videos_tmp")  # fallback pra /tmp se existir
 # ==================
