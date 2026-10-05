@@ -3,7 +3,7 @@ import requests, time, os, sys, subprocess, json, re
 
 # ===== CONFIG =====
 CONFIGS = [
-    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_recodificar.json",
+    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_catalogo.json",
 ]
 PASTA = "/tmp/videos"
 # ==================
@@ -452,6 +452,111 @@ def recodificar_eps(cfg):
         print(f"    - {f}")
 
 
+
+def catalogar(cfg):
+    """Baixa o catálogo completo (filmes + séries) e sobe pro GitHub."""
+    import time as _t
+
+    tunnel = cfg["tunnel_url"].rstrip("/")
+    repo_destino = cfg.get("repo_destino", "bootdanniel/nexustvplay-catalogo")
+    token = os.environ.get("GH_TOKEN", "")
+
+    env = os.environ.copy()
+    env["GH_TOKEN"] = token
+
+    print(f"=== MODO CATALOGAR ===")
+    print(f"Túnel origem: {tunnel}")
+    print(f"Repo destino: {repo_destino}")
+
+    # Testa túnel
+    try:
+        r = requests.get(f"{tunnel}/health", timeout=15)
+        print(f"  ✅ Ponte online: {r.json()}")
+    except Exception as e:
+        print(f"  ❌ Ponte offline: {e}")
+        return
+
+    # ============ FILMES ============
+    print(f"\n>>> Baixando lista de filmes...")
+    r = requests.get(f"{tunnel}/catalogo/filmes", timeout=60)
+    slugs_filmes = r.json()["slugs"]
+    print(f"    {len(slugs_filmes)} slugs recebidos")
+
+    filmes = []
+    inicio = _t.time()
+    for i, slug in enumerate(slugs_filmes, 1):
+        try:
+            r = requests.get(f"{tunnel}/scrape/filme/{slug}", timeout=20)
+            if r.status_code == 200:
+                d = r.json()
+                if d.get("titulo"):
+                    filmes.append(d)
+        except: pass
+
+        if i % 50 == 0 or i == len(slugs_filmes):
+            dur = (_t.time() - inicio) / 60
+            taxa = i / dur if dur else 0
+            eta = (len(slugs_filmes) - i) / taxa if taxa else 0
+            print(f"    [{i}/{len(slugs_filmes)}] OK={len(filmes)} | {taxa:.0f}/min | ETA {eta:.0f}min")
+
+    print(f"\n✅ Filmes coletados: {len(filmes)}")
+    with open("/tmp/filmes.json", "w", encoding="utf-8") as f:
+        json.dump(filmes, f, ensure_ascii=False, indent=2)
+    print(f"   Salvo: /tmp/filmes.json ({os.path.getsize('/tmp/filmes.json')//1024//1024} MB)")
+
+    # Sobe filmes
+    print(f"\n>>> Subindo filmes.json pro GitHub...")
+    r = subprocess.run(
+        ["gh", "release", "upload", "v1", "/tmp/filmes.json",
+         "--repo", repo_destino, "--clobber", "--name=filmes.json"],
+        env=env, capture_output=True, text=True, timeout=600
+    )
+    print(f"   {'✅ OK' if r.returncode == 0 else '❌ ' + r.stderr[:200]}")
+
+    # ============ SÉRIES ============
+    print(f"\n>>> Baixando lista de séries...")
+    r = requests.get(f"{tunnel}/catalogo/series", timeout=60)
+    slugs_series = r.json()["slugs"]
+    print(f"    {len(slugs_series)} slugs recebidos")
+
+    series = []
+    inicio = _t.time()
+    for i, slug in enumerate(slugs_series, 1):
+        try:
+            r = requests.get(f"{tunnel}/scrape/serie/{slug}", timeout=30)
+            if r.status_code == 200:
+                d = r.json()
+                if d.get("titulo"):
+                    series.append(d)
+        except: pass
+
+        if i % 25 == 0 or i == len(slugs_series):
+            dur = (_t.time() - inicio) / 60
+            taxa = i / dur if dur else 0
+            eta = (len(slugs_series) - i) / taxa if taxa else 0
+            print(f"    [{i}/{len(slugs_series)}] OK={len(series)} | {taxa:.1f}/min | ETA {eta:.0f}min")
+
+    print(f"\n✅ Séries coletadas: {len(series)}")
+    with open("/tmp/series.json", "w", encoding="utf-8") as f:
+        json.dump(series, f, ensure_ascii=False, indent=2)
+    print(f"   Salvo: /tmp/series.json ({os.path.getsize('/tmp/series.json')//1024//1024} MB)")
+
+    # Sobe séries
+    print(f"\n>>> Subindo series.json pro GitHub...")
+    r = subprocess.run(
+        ["gh", "release", "upload", "v1", "/tmp/series.json",
+         "--repo", repo_destino, "--clobber", "--name=series.json"],
+        env=env, capture_output=True, text=True, timeout=600
+    )
+    print(f"   {'✅ OK' if r.returncode == 0 else '❌ ' + r.stderr[:200]}")
+
+    print(f"\n{'='*60}")
+    print(f"  ✅ CATALOGAÇÃO COMPLETA!")
+    print(f"  Filmes: {len(filmes)}")
+    print(f"  Séries: {len(series)}")
+    print(f"{'='*60}")
+
+
 def main():
     print("="*60)
     print("  WORKER FILA — Múltiplas séries")
@@ -472,6 +577,11 @@ def main():
                     verificar_resolucoes(cfg_test)
                 elif cfg_test and cfg_test.get("modo") == "recodificar":
                     recodificar_eps(cfg_test)
+                elif cfg_test and cfg_test.get("modo") == "catalogar":
+                    catalogar(cfg_test)
+                    print("\n✅ Catalogação feita. Sai em 60s...")
+                    time.sleep(60)
+                    sys.exit(0)
                 else:
                     processar_config(url, i, len(CONFIGS))
             except Exception as e:
