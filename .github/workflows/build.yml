@@ -20,4 +20,6 @@ jobs:
       - uses: docker/build-push-action@v5
         with:
           push: true
-          tags: ghcr.io/bootdanniel/akash-worker:watermark
+          tags: |
+            ghcr.io/bootdanniel/akash-worker:watermark
+            ghcr.io/bootdanniel/akash-worker:watermark-v2
