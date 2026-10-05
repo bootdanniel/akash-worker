@@ -17,6 +17,8 @@ MARGEM_X  = 20        # px da esquerda
 MARGEM_Y  = 20        # px de baixo
 OPACIDADE = 0.85      # 0.0-1.0
 
+TEST_MODE = os.environ.get("TEST_MODE", "").lower() in ("1", "true", "yes")
+
 WORK = "/tmp/work"
 # ──────────────────────────────────────────────────────────
 
@@ -125,6 +127,9 @@ def main():
 
     orig = [a for a in list_assets(REPO_ORIG, TAG_ORIG) if a["name"].endswith(".mp4")]
     orig.sort(key=lambda a: a["name"])
+    if TEST_MODE:
+        log(f"*** TEST_MODE: processando só 1 EP ***")
+        orig = orig[:1]
     feitos = {a["name"] for a in list_assets(REPO_DEST, TAG_DEST)}
     log(f"{len(orig)} originais | {len(feitos)} já feitos")
 
