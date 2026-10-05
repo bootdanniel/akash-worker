@@ -5,7 +5,7 @@ import requests, time, os, sys, subprocess, json, re
 CONFIGS = [
     "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_storj.json",
 ]
-PASTA = "/tmp/videos"
+PASTA = os.path.expanduser("~/videos_tmp")  # fallback pra /tmp se existir
 # ==================
 
 def ler_config(url):
@@ -607,7 +607,7 @@ def baixar_top_storj(cfg):
         return
 
     # Prepara pasta temp
-    os.makedirs("/tmp/videos_top", exist_ok=True)
+    os.makedirs(os.path.expanduser("~/videos_top_tmp"), exist_ok=True)
 
     ok = 0
     falhas = []
@@ -623,7 +623,7 @@ def baixar_top_storj(cfg):
         # Nome do arquivo no STORJ
         nome_limpo = re.sub(r'[^A-Za-z0-9_-]', '_', titulo)[:50]
         nome_arquivo = f"{nome_limpo}_{ano}_{tmdb}.mp4"
-        destino_local = f"/tmp/videos_top/{nome_arquivo}"
+        destino_local = os.path.expanduser(f"~/videos_top_tmp/{nome_arquivo}")
 
         # 1) Pede link pra ponte
         print(f"  [1/3] Pedindo link pra ponte...")
