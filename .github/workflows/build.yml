@@ -3,6 +3,7 @@ name: Build and Push to ghcr.io
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   workflow_dispatch:
 
 jobs:
@@ -22,9 +23,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Define tags
+        id: meta
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "TAGS=ghcr.io/${{ github.repository_owner }}/akash-worker:${{ github.ref_name }},ghcr.io/${{ github.repository_owner }}/akash-worker:latest" >> $GITHUB_OUTPUT
+          else
+            echo "TAGS=ghcr.io/${{ github.repository_owner }}/akash-worker:latest" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build e push
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/akash-worker:latest
+          tags: ${{ steps.meta.outputs.TAGS }}
