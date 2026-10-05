@@ -1,0 +1,13 @@
+{
+  "tunnel_url": "https://always-timeline-date-funk.trycloudflare.com",
+  "github_repo": "bootdanniel/supernatural-24h",
+  "github_tag": "v1",
+  "tmdb": "1622",
+  "nome_template": "Sobrenatural_S{t}_EP{e:02d}.mp4",
+  "seasons": [
+    {"numero": 5, "episodios": 22},
+    {"numero": 11, "episodios": 23},
+    {"numero": 12, "episodios": 23},
+    {"numero": 15, "episodios": 20}
+  ]
+}
