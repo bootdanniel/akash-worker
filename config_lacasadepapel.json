@@ -1,14 +1,29 @@
 {
-  "tunnel_url": "https://graphs-hiring-uniform-davidson.trycloudflare.com",
+  "tunnel_url": "https://rangers-container-bikes-tex.trycloudflare.com",
   "github_repo": "minhaaalive24horas/minhaslives24horas",
   "github_tag": "v1",
   "tmdb": "71446",
   "nome_template": "La_Casa_de_Papel_S{t:02d}E{e:02d}.mp4",
   "seasons": [
-    {"numero": 1, "episodios": 13},
-    {"numero": 2, "episodios": 9},
-    {"numero": 3, "episodios": 8},
-    {"numero": 4, "episodios": 8},
-    {"numero": 5, "episodios": 10}
+    {
+      "numero": 1,
+      "episodios": 13
+    },
+    {
+      "numero": 2,
+      "episodios": 9
+    },
+    {
+      "numero": 3,
+      "episodios": 8
+    },
+    {
+      "numero": 4,
+      "episodios": 8
+    },
+    {
+      "numero": 5,
+      "episodios": 10
+    }
   ]
 }
