@@ -86,23 +86,39 @@ def upload(token, repo, tag, arquivo, nome):
             upload_path = dest
             criado = True
 
-        cmd = [
-            "gh", "release", "upload",
-            tag,
-            upload_path,
-            "--repo", repo,
-            "--clobber",
-        ]
-
         env = os.environ.copy()
         env["GH_TOKEN"] = token
 
-        r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        ultimo_erro = ""
 
-        if r.returncode != 0:
-            return _UploadResult((False, (r.stderr or r.stdout).strip()))
+        for tentativa in range(1, 5):
+            cmd = [
+                "gh", "release", "upload",
+                tag,
+                upload_path,
+                "--repo", repo,
+                "--clobber",
+            ]
 
-        return _UploadResult((True, ""))
+            r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+
+            if r.returncode == 0:
+                print("    ✅ Upload OK. Esperando 45s para evitar rate limit...", flush=True)
+                time.sleep(45)
+                return _UploadResult((True, ""))
+
+            ultimo_erro = (r.stderr or r.stdout).strip()
+            erro_lower = ultimo_erro.lower()
+
+            if "rate limit" in erro_lower or "403" in erro_lower or "secondary rate" in erro_lower:
+                espera = 120 * tentativa
+                print(f"    ⚠️ GitHub rate limit. Tentativa {tentativa}/4. Aguardando {espera}s...", flush=True)
+                time.sleep(espera)
+                continue
+
+            return _UploadResult((False, ultimo_erro))
+
+        return _UploadResult((False, f"Rate limit persistente: {ultimo_erro}"))
 
     except Exception as e:
         return _UploadResult((False, str(e)))
