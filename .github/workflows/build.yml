@@ -22,9 +22,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build e push
+      - name: Build e push (SEM CACHE)
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
+          no-cache: true
           tags: ghcr.io/bootdanniel/akash-worker:latest
