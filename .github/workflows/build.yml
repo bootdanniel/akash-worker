@@ -26,7 +26,7 @@ jobs:
         id: vars
         run: echo "CACHEBUST=$(date +%s)" >> $GITHUB_OUTPUT
 
-      - name: Build e push (FORCANDO NO-CACHE)
+      - name: Build e push FORCADO sem cache
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -36,4 +36,4 @@ jobs:
             CACHEBUST=${{ steps.vars.outputs.CACHEBUST }}
           tags: |
             ghcr.io/bootdanniel/akash-worker:latest
-            ghcr.io/bootdanniel/akash-worker:v3
+            ghcr.io/bootdanniel/akash-worker:v4

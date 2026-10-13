@@ -62,14 +62,48 @@ def baixar(mp4, destino):
         print()
 
 def upload(token, repo, tag, arquivo, nome):
-    env = os.environ.copy()
-    env["GH_TOKEN"] = token
-    r = subprocess.run(
-        ["gh", "release", "upload", tag, arquivo, "--repo", repo, "--clobber", f"--name={nome}"],
-        env=env, capture_output=True, text=True, timeout=300
-    )
-    return r.returncode == 0, r.stderr
+    abs_arquivo = os.path.abspath(arquivo)
+    dest = os.path.join(os.path.dirname(abs_arquivo), nome)
+    abs_dest = os.path.abspath(dest)
 
+    criado = False
+    upload_path = arquivo
+
+    if abs_arquivo != abs_dest:
+        if os.path.lexists(dest):
+            os.remove(dest)
+
+        try:
+            os.link(arquivo, dest)
+        except OSError:
+            os.symlink(abs_arquivo, dest)
+
+        upload_path = dest
+        criado = True
+
+    try:
+        cmd = [
+            "gh", "release", "upload",
+            tag,
+            upload_path,
+            "--repo", repo,
+            "--clobber"
+        ]
+
+        env = os.environ.copy()
+        env["GH_TOKEN"] = token
+
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or r.stdout).strip())
+
+    finally:
+        if criado:
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
 def processar_config(cfg_url, cfg_num, cfg_total):
     print(f"\n{'='*60}")
     print(f"  CONFIG {cfg_num}/{cfg_total}: {cfg_url.split('/')[-1]}")
@@ -256,7 +290,7 @@ def verificar_resolucoes(cfg):
     print(f"Subindo {output_file} pro GitHub...")
     r = subprocess.run(
         ["gh", "release", "upload", tag, output_file,
-         "--repo", repo, "--clobber", f"--name={nome}"],
+         "--repo", repo, "--clobber"],
         env=env, capture_output=True, text=True, timeout=300
     )
     if r.returncode == 0:
@@ -292,7 +326,7 @@ def salvar_progresso(token, repo, tag, processados, nome_arquivo="recodificados.
         tmp.close()
         r = subprocess.run(
             ["gh", "release", "upload", tag, tmp.name, "--repo", repo,
-             "--clobber", f"--name={nome_arquivo}"],
+             "--clobber"],
             env=env, capture_output=True, text=True, timeout=60
         )
         return r.returncode == 0
@@ -517,7 +551,7 @@ def catalogar(cfg):
     print(f"\n>>> Subindo filmes.json pro GitHub...")
     r = subprocess.run(
         ["gh", "release", "upload", "v1", "/tmp/filmes.json",
-         "--repo", repo_destino, "--clobber", "--name=filmes.json"],
+         "--repo", repo_destino, "--clobber"],
         env=env, capture_output=True, text=True, timeout=600
     )
     print(f"   {'✅ OK' if r.returncode == 0 else '❌ ' + r.stderr[:200]}")
@@ -554,7 +588,7 @@ def catalogar(cfg):
     print(f"\n>>> Subindo series.json pro GitHub...")
     r = subprocess.run(
         ["gh", "release", "upload", "v1", "/tmp/series.json",
-         "--repo", repo_destino, "--clobber", "--name=series.json"],
+         "--repo", repo_destino, "--clobber"],
         env=env, capture_output=True, text=True, timeout=600
     )
     print(f"   {'✅ OK' if r.returncode == 0 else '❌ ' + r.stderr[:200]}")
