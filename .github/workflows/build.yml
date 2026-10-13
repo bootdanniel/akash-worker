@@ -27,4 +27,4 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/minhaaalive24horas/akash-worker:latest
+          tags: ghcr.io/bootdanniel/akash-worker:latest
