@@ -62,6 +62,10 @@ def baixar(mp4, destino):
         print()
 
 def upload(token, repo, tag, arquivo, nome):
+    class _UploadResult(tuple):
+        def __bool__(self):
+            return bool(self[0])
+
     abs_arquivo = os.path.abspath(arquivo)
     dest = os.path.join(os.path.dirname(abs_arquivo), nome)
     abs_dest = os.path.abspath(dest)
@@ -69,25 +73,25 @@ def upload(token, repo, tag, arquivo, nome):
     criado = False
     upload_path = arquivo
 
-    if abs_arquivo != abs_dest:
-        if os.path.lexists(dest):
-            os.remove(dest)
-
-        try:
-            os.link(arquivo, dest)
-        except OSError:
-            os.symlink(abs_arquivo, dest)
-
-        upload_path = dest
-        criado = True
-
     try:
+        if abs_arquivo != abs_dest:
+            if os.path.lexists(dest):
+                os.remove(dest)
+
+            try:
+                os.link(arquivo, dest)
+            except OSError:
+                os.symlink(abs_arquivo, dest)
+
+            upload_path = dest
+            criado = True
+
         cmd = [
             "gh", "release", "upload",
             tag,
             upload_path,
             "--repo", repo,
-            "--clobber"
+            "--clobber",
         ]
 
         env = os.environ.copy()
@@ -96,7 +100,12 @@ def upload(token, repo, tag, arquivo, nome):
         r = subprocess.run(cmd, env=env, capture_output=True, text=True)
 
         if r.returncode != 0:
-            raise RuntimeError((r.stderr or r.stdout).strip())
+            return _UploadResult((False, (r.stderr or r.stdout).strip()))
+
+        return _UploadResult((True, ""))
+
+    except Exception as e:
+        return _UploadResult((False, str(e)))
 
     finally:
         if criado:
