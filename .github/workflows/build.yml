@@ -22,10 +22,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build e push (SEM CACHE)
+      - name: Gerar timestamp para cache bust
+        id: vars
+        run: echo "CACHEBUST=$(date +%s)" >> $GITHUB_OUTPUT
+
+      - name: Build e push (FORCANDO NO-CACHE)
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           no-cache: true
-          tags: ghcr.io/bootdanniel/akash-worker:latest
+          build-args: |
+            CACHEBUST=${{ steps.vars.outputs.CACHEBUST }}
+          tags: |
+            ghcr.io/bootdanniel/akash-worker:latest
+            ghcr.io/bootdanniel/akash-worker:v2

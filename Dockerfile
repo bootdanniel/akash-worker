@@ -1,5 +1,7 @@
-# Force rebuild: 1791923884
 FROM debian:bookworm-slim
+
+# CACHE BUST: força o rebuild sempre que este valor mudar
+ARG CACHEBUST=1
 
 RUN apt-get update && apt-get install -y \
     python3 python3-pip curl git ca-certificates ffmpeg \
