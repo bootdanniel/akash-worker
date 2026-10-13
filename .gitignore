@@ -1,14 +1,14 @@
 # Credenciais e configs locais
 deploy.yaml
-deploy.yaml.bak
-deploy.sh
-
-# Backups
+deploy*.yaml
 *.bak
 *.bak2
+*.bak3
+*.bak.*
+worker.py.bak*
 config_antigo.bak
 
-# Arquivos de runtime
+# Runtime
 .dseq
 bids.json
 deploy_response.json
@@ -16,9 +16,13 @@ deploy_status.json
 lease_response.json
 resolucoes.txt
 
-# Logs
-*.log
-
-# Outros
+# Temporários
 temp_*.mp4
 recode_*.mp4
+
+# Cache
+__pycache__/
+*.pyc
+
+# Backups
+backup-*/
