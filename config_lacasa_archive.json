@@ -1,0 +1,29 @@
+{
+  "tunnel_url": "https://tenant-cake-guardian-halloween.trycloudflare.com",
+  "tmdb": "71446",
+  "nome_template": "La_Casa_de_Papel_S{t:02d}E{e:02d}.mp4",
+  "seasons": [
+    {
+      "numero": 1,
+      "episodios": 13
+    },
+    {
+      "numero": 2,
+      "episodios": 9
+    },
+    {
+      "numero": 3,
+      "episodios": 8
+    },
+    {
+      "numero": 4,
+      "episodios": 8
+    },
+    {
+      "numero": 5,
+      "episodios": 10
+    }
+  ],
+  "archive_identifier": "la-casa-de-papel-24h",
+  "archive_title": "lá casa papel.."
+}
