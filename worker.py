@@ -2,7 +2,7 @@
 import os, sys, json, time, subprocess, requests
 
 CONFIGS = [
-    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_dexter.json",
+    "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_dexte_original.json",
 ]
 
 PEND = "/tmp/videos_pending"

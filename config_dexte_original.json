@@ -1,0 +1,41 @@
+{
+  "tunnel_url": "https://tenant-cake-guardian-halloween.trycloudflare.com",
+  "github_repo": "minhaaalive24horas/dexte-24h",
+  "github_tag": "v1",
+  "tmdb": "1405",
+  "nome_template": "dexteoriginal_s{t:02d}ep{e:02d}.mp4",
+  "seasons": [
+    {
+      "numero": 1,
+      "episodios": 12
+    },
+    {
+      "numero": 2,
+      "episodios": 12
+    },
+    {
+      "numero": 3,
+      "episodios": 12
+    },
+    {
+      "numero": 4,
+      "episodios": 12
+    },
+    {
+      "numero": 5,
+      "episodios": 12
+    },
+    {
+      "numero": 6,
+      "episodios": 12
+    },
+    {
+      "numero": 7,
+      "episodios": 12
+    },
+    {
+      "numero": 8,
+      "episodios": 12
+    }
+  ]
+}

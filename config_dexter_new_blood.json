@@ -1,0 +1,13 @@
+{
+  "tunnel_url": "https://tenant-cake-guardian-halloween.trycloudflare.com",
+  "github_repo": "minhaaalive24horas/dexte-24h",
+  "github_tag": "v1",
+  "tmdb": "117778",
+  "nome_template": "dexternewblood_s{t:02d}ep{e:02d}.mp4",
+  "seasons": [
+    {
+      "numero": 1,
+      "episodios": 10
+    }
+  ]
+}

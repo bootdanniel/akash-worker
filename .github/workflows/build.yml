@@ -36,4 +36,4 @@ jobs:
             CACHEBUST=${{ steps.vars.outputs.CACHEBUST }}
           tags: |
             ghcr.io/bootdanniel/akash-worker:latest
-            ghcr.io/bootdanniel/akash-worker:v7
+            ghcr.io/bootdanniel/akash-worker:v8
