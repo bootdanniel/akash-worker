@@ -1,41 +1,170 @@
 #!/usr/bin/env python3
-import os, sys, json, time, subprocess, requests
+import os, json, time, subprocess, requests
+from datetime import datetime
 
 CONFIGS = [
     "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_dexte_original.json",
 ]
 
 PEND = "/tmp/videos_pending"
-MAX_FILA = 3
-LOTE_UPLOAD = 2
-
+MAX_FILA = 2
+COOLDOWN_RATE = 2700          # 45 min quando GitHub limitar
+PAUSA_ENTRE_UPLOADS = 120     # 2 min entre uploads OK
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
 os.makedirs(PEND, exist_ok=True)
 
 def log(msg):
-    print(f"[worker]: {msg}", flush=True)
-
-def url_com_cache(url):
-    sep = "&" if "?" in url else "?"
-    return f"{url}{sep}t={int(time.time())}"
-
-def ler_config(url):
-    r = requests.get(url_com_cache(url), timeout=20)
-    r.raise_for_status()
-    return r.json()
+    print(f"[worker]: {datetime.now().strftime('%H:%M:%S')} {msg}", flush=True)
 
 def gh_headers(token):
     return {
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github+json",
-        "User-Agent": "akash-worker-fila"
+        "User-Agent": "akash-worker-v9"
     }
+
+def rate_info(token):
+    try:
+        r = requests.get(
+            "https://api.github.com/rate_limit",
+            headers=gh_headers(token),
+            timeout=20
+        )
+        d = r.json()
+        c = d.get("resources", {}).get("core", {})
+        return c.get("remaining"), c.get("reset")
+    except Exception as e:
+        log(f"⚠️ Não consegui ler rate_limit: {e}")
+        return None, None
+
+def garantir_rate(token, minimo=20):
+    rem, reset = rate_info(token)
+
+    if rem is None:
+        log("⚠️ Sem informação de rate limit. Esperando 10 min por segurança.")
+        time.sleep(600)
+        return
+
+    if reset is None:
+        reset = time.time() + 600
+
+    if rem >= minimo:
+        return
+
+    espera = max(120, int(reset - time.time() + 120))
+    if espera > 3600:
+        espera = 3600
+
+    log(f"⛔ GitHub rate limit baixo. remaining={rem}. Esperando {espera}s...")
+    time.sleep(espera)
+
+def erro_rate(text):
+    t = text.lower()
+    sinais = [
+        "rate limit",
+        "secondary rate",
+        "abuse detection",
+        "too many requests",
+        "403",
+        "429",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "temporary failure",
+        "502",
+        "503",
+        "service unavailable",
+    ]
+    return any(s in t for s in sinais)
+
+def arquivos_pendentes():
+    try:
+        return sorted([f for f in os.listdir(PEND) if f.lower().endswith(".mp4")])
+    except FileNotFoundError:
+        return []
+
+def enviar_um(token, repo, tag, nome):
+    caminho = os.path.join(PEND, nome)
+
+    if not os.path.exists(caminho):
+        return True
+
+    env = os.environ.copy()
+    env["GH_TOKEN"] = token
+
+    for tentativa in range(1, 3):
+        garantir_rate(token, minimo=20)
+
+        log(f"    → Enviando {nome} (tentativa {tentativa}/2)")
+
+        cmd = [
+            "gh", "release", "upload",
+            tag,
+            caminho,
+            "--repo", repo,
+            "--clobber"
+        ]
+
+        try:
+            r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=3600)
+        except subprocess.TimeoutExpired:
+            log("    ⚠️ Timeout no upload. Arquivo fica na fila.")
+            log(f"    ⏳ Cooldown de {COOLDOWN_RATE // 60} min...")
+            time.sleep(COOLDOWN_RATE)
+            return False
+
+        out = (r.stderr or r.stdout).strip()
+
+        if r.returncode == 0:
+            try:
+                os.remove(caminho)
+            except OSError:
+                pass
+
+            log(f"    ✅ Enviado: {nome}")
+            time.sleep(PAUSA_ENTRE_UPLOADS)
+            return True
+
+        if erro_rate(out):
+            log(f"    ⚠️ GitHub limitou/instável: {out[:250]}")
+            log(f"    ⏳ Arquivo fica na fila. Cooldown de {COOLDOWN_RATE // 60} min...")
+            time.sleep(COOLDOWN_RATE)
+            return False
+
+        log(f"    ❌ Erro definitivo no upload: {out[:500]}")
+        return False
+
+    return False
+
+def enviar_pendentes(token, repo, tag):
+    files = arquivos_pendentes()
+    if not files:
+        return 0
+
+    enviados = 0
+
+    for nome in files:
+        if enviar_um(token, repo, tag, nome):
+            enviados += 1
+        else:
+            break
+
+    return enviados
+
+def url_cache(u):
+    sep = "&" if "?" in u else "?"
+    return f"{u}{sep}t={int(time.time())}"
+
+def ler_config(u):
+    r = requests.get(url_cache(u), timeout=30)
+    r.raise_for_status()
+    return r.json()
 
 def ensure_release(token, repo, tag):
     h = gh_headers(token)
     url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
-    r = requests.get(url, headers=h, timeout=20)
+    r = requests.get(url, headers=h, timeout=30)
 
     if r.ok:
         return r.json()
@@ -48,14 +177,17 @@ def ensure_release(token, repo, tag):
             "draft": False,
             "prerelease": False
         }
+
         r2 = requests.post(
             f"https://api.github.com/repos/{repo}/releases",
             headers=h,
             json=body,
-            timeout=20
+            timeout=30
         )
+
         if r2.ok:
             return r2.json()
+
         raise RuntimeError(f"Falha criando release: {r2.status_code} {r2.text[:300]}")
 
     raise RuntimeError(f"Falha lendo release: {r.status_code} {r.text[:300]}")
@@ -68,8 +200,11 @@ def listar_existentes(token, repo, tag):
     page = 1
 
     while True:
+        garantir_rate(token, minimo=10)
+
         url = f"https://api.github.com/repos/{repo}/releases/{rid}/assets?per_page=100&page={page}"
-        r = requests.get(url, headers=h, timeout=20)
+        r = requests.get(url, headers=h, timeout=30)
+
         if not r.ok:
             raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
 
@@ -87,18 +222,12 @@ def listar_existentes(token, repo, tag):
 
     return nomes
 
-def arquivos_pendentes():
-    try:
-        return sorted([f for f in os.listdir(PEND) if f.lower().endswith(".mp4")])
-    except FileNotFoundError:
-        return []
-
 def pedir_link(tunnel, tmdb, t, e):
     url = f"{tunnel.rstrip('/')}/resolver/{tmdb}/{t}/{e}"
 
     for i in range(1, 4):
         try:
-            r = requests.get(url, timeout=90)
+            r = requests.get(url, timeout=120)
             d = r.json()
             mp4 = d.get("mp4")
             if mp4:
@@ -107,12 +236,12 @@ def pedir_link(tunnel, tmdb, t, e):
         except Exception as ex:
             log(f"    erro ponte tentativa {i}: {ex}")
 
-        time.sleep(10)
+        time.sleep(15)
 
     return None
 
 def baixar(url, destino):
-    r = requests.get(url, stream=True, timeout=60, headers={"User-Agent": UA})
+    r = requests.get(url, stream=True, timeout=(30, 300), headers={"User-Agent": UA})
     r.raise_for_status()
 
     total = int(r.headers.get("content-length", 0))
@@ -140,76 +269,6 @@ def baixar(url, destino):
     os.replace(part, destino)
     return baixado
 
-def enviar_pendentes(token, repo, tag):
-    files = [os.path.join(PEND, n) for n in arquivos_pendentes()]
-    if not files:
-        return 0
-
-    enviados = 0
-    env = os.environ.copy()
-    env["GH_TOKEN"] = token
-
-    for i in range(0, len(files), LOTE_UPLOAD):
-        lote = files[i:i + LOTE_UPLOAD]
-        nomes = [os.path.basename(x) for x in lote]
-
-        cmd = [
-            "gh", "release", "upload",
-            tag,
-            *lote,
-            "--repo", repo,
-            "--clobber"
-        ]
-
-        sucesso = False
-
-        for tentativa in range(1, 4):
-            log(f"    → Enviando lote: {', '.join(nomes)} (tentativa {tentativa}/3)")
-
-            r = subprocess.run(cmd, env=env, capture_output=True, text=True)
-            erro = (r.stderr or r.stdout).strip()
-            low = erro.lower()
-
-            if r.returncode == 0:
-                for fp in lote:
-                    try:
-                        os.remove(fp)
-                    except OSError:
-                        pass
-
-                enviados += len(lote)
-                log(f"    ✅ Lote enviado: {', '.join(nomes)}")
-                sucesso = True
-                time.sleep(30)
-                break
-
-            sinais = [
-                "rate limit",
-                "timeout",
-                "timed out",
-                "403",
-                "502",
-                "503",
-                "connection reset",
-                "temporary failure",
-                "secondary rate"
-            ]
-
-            if any(x in low for x in sinais):
-                espera = 90 * tentativa
-                log(f"    ⚠️ API instável/limite. Arquivos ficam na fila. Aguardando {espera}s...")
-                time.sleep(espera)
-                continue
-
-            log(f"    ❌ Erro definitivo no upload: {erro[:500]}")
-            return enviados
-
-        if not sucesso:
-            log("    ⚠️ Limite persistente. Deixo na fila e continuo no próximo ciclo.")
-            return enviados
-
-    return enviados
-
 def processar_config(cfg_url):
     log("=" * 60)
     log(f"CONFIG: {cfg_url}")
@@ -236,10 +295,18 @@ def processar_config(cfg_url):
     log(f"Repo: {repo} ({tag})")
     log(f"TMDB: {tmdb}")
 
-    # 1) Primeiro tenta enviar o que já está na fila, mesmo se a ponte cair depois.
-    enviados = enviar_pendentes(token, repo, tag)
-    if enviados:
-        log(f"✅ Enviados da fila antes de baixar: {enviados}")
+    # 1) Se já tem fila, tenta enviar antes de baixar qualquer coisa.
+    if arquivos_pendentes():
+        log(f"📦 Fila local: {len(arquivos_pendentes())}. Tentando enviar antes de baixar.")
+        enviados = enviar_pendentes(token, repo, tag)
+
+        if enviados:
+            log(f"✅ Enviados da fila: {enviados}")
+
+        if arquivos_pendentes():
+            log("⚠️ Ainda há arquivos na fila após tentativa.")
+            log("⛔ Não vou baixar mais neste ciclo para não piorar o rate limit.")
+            return
 
     # 2) Testa ponte.
     try:
@@ -249,7 +316,7 @@ def processar_config(cfg_url):
         log(f"❌ Ponte offline: {ex}")
         return
 
-    # 3) Calcula faltantes considerando GitHub + fila local.
+    # 3) Calcula faltantes.
     try:
         existentes = listar_existentes(token, repo, tag)
     except Exception as ex:
@@ -306,15 +373,15 @@ def processar_config(cfg_url):
                         pass
             continue
 
-        # Quando tiver 2 arquivos, tenta enviar os 2 juntos.
-        if len(arquivos_pendentes()) >= LOTE_UPLOAD:
+        # Quando tiver 2 na fila, tenta enviar antes de baixar o próximo.
+        if len(arquivos_pendentes()) >= MAX_FILA:
             enviar_pendentes(token, repo, tag)
 
     # No fim, tenta mandar o que sobrou.
     enviar_pendentes(token, repo, tag)
 
 def main():
-    log("WORKER FILA COM UPLOAD EM LOTE iniciado")
+    log("WORKER v9 COM COOLDOWN FORTE iniciado")
 
     while True:
         for c in CONFIGS:
