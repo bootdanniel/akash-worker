@@ -7,8 +7,8 @@ CONFIGS = [
 ]
 
 PEND = "/tmp/videos_pending"
-COOLDOWN = 600                 # 10 min entre tentativas de upload
-MAX_TENTATIVAS = 12            # depois cai pro ciclo externo (5 min) e tenta de novo
+COOLDOWN = 300                 # 10 min entre tentativas de upload
+MAX_TENTATIVAS = 20            # depois cai pro ciclo externo (5 min) e tenta de novo
 UPLOAD_TIMEOUT = 10800         # 3h pro lote gigante
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
