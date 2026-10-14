@@ -17,7 +17,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 RUN pip3 install --break-system-packages requests
 
 WORKDIR /app
-RUN python3 -m pip install --break-system-packages --no-cache-dir boto3
+RUN python3 -m pip install --break-system-packages --no-cache-dir internetarchive
 COPY worker.py /app/worker.py
 
 CMD ["python3", "-u", "/app/worker.py"]

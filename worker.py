@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-import os, json, time, shutil, requests, boto3
+import os, sys, json, time, shutil, requests
 from datetime import datetime
-from botocore.config import Config as BotoConfig
-from boto3.s3.transfer import TransferConfig
-from botocore.exceptions import ClientError
+import internetarchive as ia
 
 CONFIGS = [
     "https://raw.githubusercontent.com/bootdanniel/akash-worker/main/config_dexter_archive.json",
@@ -11,162 +9,236 @@ CONFIGS = [
 ]
 
 PEND = "/tmp/videos_pending"
-S3_ENDPOINT = "https://s3.us.archive.org"
-PAUSA_ENTRE_ENVIOS = 20
+STATE = "/tmp/archive_state"
+
+PAUSA_ENTRE_ENVIOS = 10
 RETRIES_ARQUIVO = 3
 FALHAS_SEGUIDAS_PARA = 3
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
 os.makedirs(PEND, exist_ok=True)
+os.makedirs(STATE, exist_ok=True)
 
-def log(m): print(f"[worker]: {datetime.now().strftime('%H:%M:%S')} {m}", flush=True)
+def log(m):
+    print(f"[worker]: {datetime.now().strftime('%H:%M:%S')} {m}", flush=True)
 
-def url_cache(u): return f"{u}{'&' if '?' in u else '?'}t={int(time.time())}"
+def url_cache(u):
+    return f"{u}{'&' if '?' in u else '?'}t={int(time.time())}"
+
 def ler_config(u):
-    r = requests.get(url_cache(u), timeout=30); r.raise_for_status(); return r.json()
+    r = requests.get(url_cache(u), timeout=30)
+    r.raise_for_status()
+    return r.json()
 
-def make_s3():
-    ak = os.environ.get("IA_ACCESS_KEY", "")
-    sk = os.environ.get("IA_SECRET_KEY", "")
+def garantir_ini():
+    ak = (os.environ.get("IA_ACCESS_KEY") or "").strip()
+    sk = (os.environ.get("IA_SECRET_KEY") or "").strip()
+
     if not ak or not sk:
-        raise RuntimeError("IA_ACCESS_KEY / IA_SECRET_KEY vazias")
-    sess = boto3.session.Session(aws_access_key_id=ak, aws_secret_access_key=sk)
-    return sess.client("s3", endpoint_url=S3_ENDPOINT, region_name="us-east-1",
-                       config=BotoConfig(signature_version="s3v4", retries={"max_attempts": 3})
-TC = TransferConfig(multipart_threshold=5*1024**3, multipart_chunksize=5*1024**3, max_concurrency=1, use_threads=False))
+        log("CRITICO: IA_ACCESS_KEY / IA_SECRET_KEY vazias no env do deploy.")
+        return False
 
-def listar_itens(s3, identifier):
-    keys = set(); token = None
-    try:
-        while True:
-            kw = {"Bucket": identifier, "MaxKeys": 1000}
-            if token: kw["ContinuationToken"] = token
-            r = s3.list_objects_v2(**kw)
-            for o in r.get("Contents", []): keys.add(o["Key"])
-            if not r.get("IsTruncated"): break
-            token = r["NextContinuationToken"]
-    except ClientError as e:
-        code = e.response.get("Error", {}).get("Code", "")
-        if code in ("NoSuchBucket", "404"):
-            return set()
-        raise
-    return keys
+    cfg = os.path.expanduser("~/.config/ia.ini")
+    os.makedirs(os.path.dirname(cfg), exist_ok=True)
 
-def ensure_title(identifier, title):
+    with open(cfg, "w", encoding="utf-8") as f:
+        f.write(f"[s3]\naccess_key = {ak}\nsecret_key = {sk}\n")
+
+    log("ia.ini gravado com as chaves do deploy.")
+    return True
+
+def state_path(identifier):
+    return os.path.join(STATE, identifier + ".txt")
+
+def carregar_estado(identifier):
+    p = state_path(identifier)
     try:
-        g = requests.get(f"https://archive.org/metadata/{identifier}", timeout=30)
-        if g.status_code != 200:
-            return
-        md = g.json().get("metadata", {}) or {}
-        if md.get("title") == title:
-            return
-        p = requests.post(f"https://archive.org/metadata/{identifier}",
-                          json={"title": title, "mediatype": "movies"}, timeout=30)
-        log(f"🏷️  title -> {title!r} (http {p.status_code})")
+        with open(p, "r", encoding="utf-8") as f:
+            return {line.strip() for line in f if line.strip()}
+    except FileNotFoundError:
+        return set()
     except Exception as e:
-        log(f"⚠️  ensure_title falhou (seguimos): {e}")
+        log(f"⚠️ carregar_estado: {repr(e)[:200]}")
+        return set()
+
+def marcar_enviado(identifier, nome):
+    p = state_path(identifier)
+    try:
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(nome + "\n")
+    except Exception as e:
+        log(f"⚠️ marcar_enviado: {repr(e)[:200]}")
+
+def listar_mp4(identifier):
+    try:
+        r = requests.get(f"https://archive.org/metadata/{identifier}", timeout=30)
+
+        if r.status_code != 200:
+            return set()
+
+        files = r.json().get("files") or []
+        return {
+            f.get("name")
+            for f in files
+            if str(f.get("name", "")).lower().endswith(".mp4")
+        }
+
+    except Exception as e:
+        log(f"⚠️ listar_mp4: {repr(e)[:240]}")
+        return set()
 
 def pendentes():
-    try: return sorted([f for f in os.listdir(PEND) if f.lower().endswith(".mp4")])
-    except FileNotFoundError: return []
-
-def remover_local(n):
-    p = os.path.join(PEND, n)
     try:
-        if os.path.exists(p): os.remove(p)
-    except OSError: pass
+        return sorted([f for f in os.listdir(PEND) if f.lower().endswith(".mp4")])
+    except FileNotFoundError:
+        return []
 
-def pedir_link(tun, tmdb, t, e):
-    u = f"{tun.rstrip('/')}/resolver/{tmdb}/{t}/{e}"
+def remover_local(nome):
+    p = os.path.join(PEND, nome)
+    try:
+        if os.path.exists(p):
+            os.remove(p)
+    except OSError:
+        pass
+
+def pedir_link(tunnel, tmdb, t, e):
+    url = f"{tunnel.rstrip('/')}/resolver/{tmdb}/{t}/{e}"
+
     for i in range(1, 4):
         try:
-            d = requests.get(u, timeout=120).json()
-            if d.get("mp4"): return d["mp4"]
+            d = requests.get(url, timeout=120).json()
+            if d.get("mp4"):
+                return d["mp4"]
             log(f"    ponte sem link {i}: {d}")
         except Exception as ex:
             log(f"    erro ponte {i}: {ex}")
+
         time.sleep(15)
+
     return None
 
-def baixar(url, dest):
+def baixar(url, destino):
     r = requests.get(url, stream=True, timeout=(30, 300), headers={"User-Agent": UA})
     r.raise_for_status()
-    total = int(r.headers.get("content-length", 0)); b = 0; ult = 0; part = dest + ".part"
+
+    total = int(r.headers.get("content-length", 0))
+    baix = 0
+    ult = 0
+    part = destino + ".part"
+
     with open(part, "wb") as f:
         for c in r.iter_content(4 * 1024 * 1024):
             if c:
-                f.write(c); b += len(c)
-                if total:
-                    p = int(b * 100 / total)
-                    if p >= ult + 5:
-                        print(f"\r[worker]:     {p}% ({b//1024//1024}/{total//1024//1024} MB)", end="", flush=True); ult = p
-    print("", flush=True); os.replace(part, dest); return b
+                f.write(c)
+                baix += len(c)
 
-def subir_um(s3, identifier, nome):
+                if total:
+                    p = int(baix * 100 / total)
+                    if p >= ult + 5:
+                        print(
+                            f"\r[worker]:     {p}% ({baix // 1024 // 1024}/{total // 1024 // 1024} MB)",
+                            end="",
+                            flush=True
+                        )
+                        ult = p
+
+    print("", flush=True)
+    os.replace(part, destino)
+    return baix
+
+def subir_um(identifier, nome, title):
     path = os.path.join(PEND, nome)
+
+    if not os.path.exists(path):
+        return True
+
     ultimo = ""
+
     for tent in range(1, RETRIES_ARQUIVO + 1):
         try:
-            s3.upload_file(path, identifier, nome, Config=TC)
-            return True
+            statuses = []
+
+            for resp in ia.upload(
+                identifier,
+                [path],
+                metadata={"title": title, "mediatype": "movies"},
+                retries=3,
+                verbose=False
+            ):
+                sc = getattr(resp, "status_code", 0) or 0
+                statuses.append(sc)
+                log(f"    Archive.org HTTP {sc} {nome}")
+
+            if statuses and all(200 <= sc < 400 for sc in statuses):
+                return True
+
+            ultimo = f"status={statuses}"
+
         except Exception as e:
             ultimo = repr(e)
-            log(f"    ⚠️ upload_file {nome} tent {tent}/{RETRIES_ARQUIVO}: {ultimo[:240]}")
-            time.sleep(20 * tent)
-        # fallback explicito: put_object puro (nunca multipart)
-        try:
-            with open(path, "rb") as f:
-                s3.put_object(Bucket=identifier, Key=nome, Body=f)
-            log(f"    ✅ put_object fallback ok: {nome}")
-            return True
-        except Exception as e:
-            ultimo = repr(e)
-            log(f"    ⚠️ put_object {nome} tent {tent}/{RETRIES_ARQUIVO}: {ultimo[:240]}")
-            time.sleep(20 * tent)
-    log(f"    ❌ {nome} falhou definitivamente: {ultimo[:400]}")
+            log(f"    upload {nome} tent {tent}/{RETRIES_ARQUIVO}: {ultimo[:300]}")
+
+        time.sleep(15 * tent)
+
+    log(f"    ❌ {nome} falhou definitivamente: {ultimo[:450]}")
     return False
 
-def enviar_pendentes(s3, identifier, existentes):
-    fila = pendentes()
-    if not fila: return 0
-    log(f"📤 reenviando {len(fila)} pendente(s) do ciclo anterior")
-    enviados = 0; falhas = 0
-    for n in fila:
-        if n in existentes:
-            remover_local(n); continue
-        if subir_um(s3, identifier, n):
-            remover_local(n); existentes.add(n); enviados += 1; falhas = 0
-            log(f"✅ enviado {n}"); time.sleep(PAUSA_ENTRE_ENVIOS)
-        else:
-            falhas += 1
-            log(f"❌ {n} ficou em PEND (falha {falhas})")
-            if falhas >= FALHAS_SEGUIDAS_PARA:
-                log(" muitas falhas seguidas, paro reenvio deste ciclo"); break
-    return enviados
+def processar_config(cfg_url):
+    log("=" * 60)
+    log(f"CONFIG: {cfg_url}")
 
-def processar_config(cu):
-    log("=" * 60); log(f"CONFIG: {cu}")
-    try: cfg = ler_config(cu)
-    except Exception as ex: log(f"❌ config: {ex}"); return
+    try:
+        cfg = ler_config(cfg_url)
+    except Exception as ex:
+        log(f"❌ Erro lendo config: {ex}")
+        return
 
-    identifier = cfg["archive_identifier"]; title = cfg["archive_title"]
-    tmdb = cfg["tmdb"]; tun = cfg["tunnel_url"].rstrip("/")
+    identifier = cfg["archive_identifier"]
+    title = cfg["archive_title"]
+    tmdb = cfg["tmdb"]
+    tunnel = cfg["tunnel_url"].rstrip("/")
     tmpl = cfg.get("nome_template", "S{t:02d}E{e:02d}.mp4")
 
-    log(f"Item Archive: {identifier}  (título: {title!r}) | TMDB: {tmdb}")
+    log(f"Item Archive: {identifier} | título: {title!r} | TMDB: {tmdb}")
 
-    try: s3 = make_s3()
-    except Exception as ex: log(f"❌ S3: {ex}"); return
+    existentes = listar_mp4(identifier)
+    existentes.update(carregar_estado(identifier))
 
-    ensure_title(identifier, title)
+    # 1) Primeiro reenvia o que já estiver na fila local.
+    falhas = 0
 
-    try: existentes = listar_itens(s3, identifier)
-    except Exception as ex: log(f"❌ listando item: {ex}"); return
+    for nome in pendentes():
+        if nome in existentes:
+            remover_local(nome)
+            continue
 
-    enviar_pendentes(s3, identifier, existentes)
+        if subir_um(identifier, nome, title):
+            remover_local(nome)
+            marcar_enviado(identifier, nome)
+            existentes.add(nome)
+            log(f"✅ enviado da fila: {nome}")
+            falhas = 0
+            time.sleep(PAUSA_ENTRE_ENVIOS)
+        else:
+            falhas += 1
+            log(f"❌ {nome} ficou na fila (falha {falhas})")
+            if falhas >= FALHAS_SEGUIDAS_PARA:
+                log("⚠️ Muitas falhas seguidas no reenvio. Paro este ciclo.")
+                break
 
+    # 2) Confere ponte antes de baixar.
+    try:
+        h = requests.get(f"{tunnel}/health", timeout=15).json()
+        log(f"✅ Ponte online: {h}")
+    except Exception as ex:
+        log(f"❌ Ponte offline: {ex}")
+        return
+
+    # 3) Calcula faltantes.
     fila_set = set(pendentes())
     faltando = []
+
     for s in cfg["seasons"]:
         t = int(s["numero"])
         for e in range(1, int(s["episodios"]) + 1):
@@ -174,41 +246,75 @@ def processar_config(cu):
             if n not in existentes and n not in fila_set:
                 faltando.append((t, e, n))
 
-    log(f"📋 {len(existentes)} no item | {len(faltando)} a baixar/enviar")
-    if not faltando:
-        log("✅ nada pendente."); return
+    log(f"📋 {len(existentes)} no item/estado local | {len(faltando)} a baixar/enviar")
 
-    for i, (t, e, n) in enumerate(faltando, 1):
-        if shutil.disk_usage(PEND).free < 1_600_000_000:
-            log("⚠️ disco baixo, paro download"); break
-        log(f"── [{i}/{len(faltando)}] {n} ──")
-        link = pedir_link(tun, tmdb, t, e)
+    if not faltando:
+        log("✅ Nada pendente.")
+        return
+
+    # 4) Baixa 1, envia 1, apaga local, vai para o próximo.
+    falhas = 0
+
+    for i, (t, e, nome) in enumerate(faltando, 1):
+        free = shutil.disk_usage(PEND).free
+
+        if free < 1_600_000_000:
+            log(f"⚠️ Espaço baixo ({free // 1024 // 1024} MB livres). Paro download deste ciclo.")
+            break
+
+        log(f"── [{i}/{len(faltando)}] {nome} ──")
+
+        link = pedir_link(tunnel, tmdb, t, e)
+
         if not link:
-            log("❌ sem link, pulando"); continue
+            log("❌ Sem link, pulando")
+            continue
+
+        destino = os.path.join(PEND, nome)
+
         try:
-            sz = baixar(link, os.path.join(PEND, n))
-            log(f"✅ baixado {n} ({sz/1024/1024:.1f} MB)")
+            sz = baixar(link, destino)
+            log(f"✅ baixado {nome} ({sz / 1024 / 1024:.1f} MB)")
         except Exception as ex:
             log(f"❌ falha baixando: {ex}")
             for sx in ("", ".part"):
-                p = os.path.join(PEND, n) + sx
+                p = destino + sx
                 if os.path.exists(p):
-                    try: os.remove(p)
-                    except OSError: pass
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
             continue
-        if subir_um(s3, identifier, n):
-            remover_local(n); existentes.add(n)
-            log(f"✅ enviado {n}"); time.sleep(PAUSA_ENTRE_ENVIOS)
+
+        if subir_um(identifier, nome, title):
+            remover_local(nome)
+            marcar_enviado(identifier, nome)
+            existentes.add(nome)
+            log(f"✅ ENVIADO {nome}")
+            falhas = 0
+            time.sleep(PAUSA_ENTRE_ENVIOS)
         else:
-            log(f"❌ {n} falhou no upload, fica em PEND pro próximo ciclo")
+            falhas += 1
+            log(f"❌ {nome} falhou no upload, fica em PEND (falha {falhas})")
+            if falhas >= FALHAS_SEGUIDAS_PARA:
+                log("⚠️ Muitas falhas seguidas. Paro este ciclo e tento de novo depois.")
+                break
 
 def main():
-    log("WORKER v15 — ARCHIVE.ORG 1 a 1 (Dexter -> La Casa) iniciado")
+    log("WORKER v21 — ARCHIVE.ORG via internetarchive, 1 a 1, sem multipart")
+
+    if not garantir_ini():
+        sys.exit(1)
+
     while True:
         for c in CONFIGS:
-            try: processar_config(c)
-            except Exception as ex: log(f"Erro config {c}: {ex}")
-        log("⏸ ciclo completo, espero 5 min"); time.sleep(300)
+            try:
+                processar_config(c)
+            except Exception as ex:
+                log(f"Erro no config {c}: {ex}")
+
+        log("⏸ Ciclo completo. Esperando 5 min...")
+        time.sleep(300)
 
 if __name__ == "__main__":
     main()
