@@ -2,6 +2,7 @@
 import os, json, time, shutil, requests, boto3
 from datetime import datetime
 from botocore.config import Config as BotoConfig
+from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
 
 CONFIGS = [
@@ -31,7 +32,8 @@ def make_s3():
         raise RuntimeError("IA_ACCESS_KEY / IA_SECRET_KEY vazias")
     sess = boto3.session.Session(aws_access_key_id=ak, aws_secret_access_key=sk)
     return sess.client("s3", endpoint_url=S3_ENDPOINT, region_name="us-east-1",
-                       config=BotoConfig(signature_version="s3v4", retries={"max_attempts": 3}))
+                       config=BotoConfig(signature_version="s3v4", retries={"max_attempts": 3})
+TC = TransferConfig(multipart_threshold=5*1024**3, multipart_chunksize=5*1024**3, max_concurrency=1, use_threads=False))
 
 def listar_itens(s3, identifier):
     keys = set(); token = None
@@ -102,13 +104,26 @@ def baixar(url, dest):
 
 def subir_um(s3, identifier, nome):
     path = os.path.join(PEND, nome)
+    ultimo = ""
     for tent in range(1, RETRIES_ARQUIVO + 1):
         try:
-            s3.upload_file(path, identifier, nome)
+            s3.upload_file(path, identifier, nome, Config=TC)
             return True
         except Exception as e:
-            log(f"    ⚠️  upload {nome} tent {tent}/{RETRIES_ARQUIVO}: {str(e)[:200]}")
-            time.sleep(30 * tent)
+            ultimo = repr(e)
+            log(f"    ⚠️ upload_file {nome} tent {tent}/{RETRIES_ARQUIVO}: {ultimo[:240]}")
+            time.sleep(20 * tent)
+        # fallback explicito: put_object puro (nunca multipart)
+        try:
+            with open(path, "rb") as f:
+                s3.put_object(Bucket=identifier, Key=nome, Body=f)
+            log(f"    ✅ put_object fallback ok: {nome}")
+            return True
+        except Exception as e:
+            ultimo = repr(e)
+            log(f"    ⚠️ put_object {nome} tent {tent}/{RETRIES_ARQUIVO}: {ultimo[:240]}")
+            time.sleep(20 * tent)
+    log(f"    ❌ {nome} falhou definitivamente: {ultimo[:400]}")
     return False
 
 def enviar_pendentes(s3, identifier, existentes):
