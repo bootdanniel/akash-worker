@@ -20,6 +20,8 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 os.makedirs(PEND, exist_ok=True)
 os.makedirs(STATE, exist_ok=True)
 
+AUTH_FATAL = False
+
 def log(m):
     print(f"[worker]: {datetime.now().strftime('%H:%M:%S')} {m}", flush=True)
 
@@ -31,22 +33,49 @@ def ler_config(u):
     r.raise_for_status()
     return r.json()
 
-def garantir_ini():
+def get_creds():
     ak = (os.environ.get("IA_ACCESS_KEY") or "").strip()
     sk = (os.environ.get("IA_SECRET_KEY") or "").strip()
+    return ak, sk
+
+def garantir_ini():
+    global AUTH_FATAL
+    ak, sk = get_creds()
 
     if not ak or not sk:
         log("CRITICO: IA_ACCESS_KEY / IA_SECRET_KEY vazias no env do deploy.")
+        AUTH_FATAL = True
         return False
 
     cfg = os.path.expanduser("~/.config/ia.ini")
     os.makedirs(os.path.dirname(cfg), exist_ok=True)
 
     with open(cfg, "w", encoding="utf-8") as f:
-        f.write(f"[s3]\naccess_key = {ak}\nsecret_key = {sk}\n")
+        f.write("[s3]\n")
+        f.write(f"access = {ak}\n")
+        f.write(f"secret = {sk}\n")
 
-    log("ia.ini gravado com as chaves do deploy.")
+    # Fallback para versões/leituras que usem variáveis de ambiente.
+    os.environ["ARCHIVE_ACCESS_KEY"] = ak
+    os.environ["ARCHIVE_SECRET_KEY"] = sk
+
+    log("ia.ini gravado no formato access/secret + env fallback.")
     return True
+
+def erro_auth(t):
+    t = (t or "").lower()
+    sinais = [
+        "authenticationerror",
+        "no access_key",
+        "no secret_key",
+        "access_key or secret_key set",
+        "usernamecanwrite",
+        "invalidaccesskeyid",
+        "signaturedoesnotmatch",
+        "the specified bucket is not valid",
+        "item cannot be retrieved",
+    ]
+    return any(s in t for s in sinais)
 
 def state_path(identifier):
     return os.path.join(STATE, identifier + ".txt")
@@ -148,11 +177,14 @@ def baixar(url, destino):
     return baix
 
 def subir_um(identifier, nome, title):
+    global AUTH_FATAL
+
     path = os.path.join(PEND, nome)
 
     if not os.path.exists(path):
         return True
 
+    ak, sk = get_creds()
     ultimo = ""
 
     for tent in range(1, RETRIES_ARQUIVO + 1):
@@ -163,6 +195,8 @@ def subir_um(identifier, nome, title):
                 identifier,
                 [path],
                 metadata={"title": title, "mediatype": "movies"},
+                access_key=ak,
+                secret_key=sk,
                 retries=3,
                 verbose=False
             ):
@@ -173,11 +207,22 @@ def subir_um(identifier, nome, title):
             if statuses and all(200 <= sc < 400 for sc in statuses):
                 return True
 
+            if any(sc in (401, 403) for sc in statuses):
+                AUTH_FATAL = True
+                ultimo = f"status={statuses}"
+                log("    ❌ Resposta 401/403 do Archive.org. Parando este item para não baixar mais à toa.")
+                return False
+
             ultimo = f"status={statuses}"
 
         except Exception as e:
             ultimo = repr(e)
             log(f"    upload {nome} tent {tent}/{RETRIES_ARQUIVO}: {ultimo[:300]}")
+
+            if erro_auth(ultimo):
+                AUTH_FATAL = True
+                log("    ❌ Erro de autenticação/escrita. Parando este item para não baixar mais à toa.")
+                return False
 
         time.sleep(15 * tent)
 
@@ -185,6 +230,9 @@ def subir_um(identifier, nome, title):
     return False
 
 def processar_config(cfg_url):
+    global AUTH_FATAL
+    AUTH_FATAL = False
+
     log("=" * 60)
     log(f"CONFIG: {cfg_url}")
 
@@ -209,6 +257,9 @@ def processar_config(cfg_url):
     falhas = 0
 
     for nome in pendentes():
+        if AUTH_FATAL:
+            return
+
         if nome in existentes:
             remover_local(nome)
             continue
@@ -221,11 +272,15 @@ def processar_config(cfg_url):
             falhas = 0
             time.sleep(PAUSA_ENTRE_ENVIOS)
         else:
+            if AUTH_FATAL:
+                return
+
             falhas += 1
             log(f"❌ {nome} ficou na fila (falha {falhas})")
+
             if falhas >= FALHAS_SEGUIDAS_PARA:
                 log("⚠️ Muitas falhas seguidas no reenvio. Paro este ciclo.")
-                break
+                return
 
     # 2) Confere ponte antes de baixar.
     try:
@@ -256,11 +311,14 @@ def processar_config(cfg_url):
     falhas = 0
 
     for i, (t, e, nome) in enumerate(faltando, 1):
+        if AUTH_FATAL:
+            return
+
         free = shutil.disk_usage(PEND).free
 
         if free < 1_600_000_000:
             log(f"⚠️ Espaço baixo ({free // 1024 // 1024} MB livres). Paro download deste ciclo.")
-            break
+            return
 
         log(f"── [{i}/{len(faltando)}] {nome} ──")
 
@@ -294,14 +352,18 @@ def processar_config(cfg_url):
             falhas = 0
             time.sleep(PAUSA_ENTRE_ENVIOS)
         else:
+            if AUTH_FATAL:
+                return
+
             falhas += 1
             log(f"❌ {nome} falhou no upload, fica em PEND (falha {falhas})")
+
             if falhas >= FALHAS_SEGUIDAS_PARA:
                 log("⚠️ Muitas falhas seguidas. Paro este ciclo e tento de novo depois.")
-                break
+                return
 
 def main():
-    log("WORKER v21 — ARCHIVE.ORG via internetarchive, 1 a 1, sem multipart")
+    log("WORKER v22 — ARCHIVE.ORG corrigido: access/secret + upload kwargs + parada em erro de auth")
 
     if not garantir_ini():
         sys.exit(1)
@@ -312,6 +374,10 @@ def main():
                 processar_config(c)
             except Exception as ex:
                 log(f"Erro no config {c}: {ex}")
+
+            if AUTH_FATAL:
+                log("⚠️ Erro de auth detectado. Pulando configs restantes deste ciclo.")
+                break
 
         log("⏸ Ciclo completo. Esperando 5 min...")
         time.sleep(300)
