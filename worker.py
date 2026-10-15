@@ -19,12 +19,12 @@ EP_END = int(os.environ.get("EP_END") or 128)
 IDENT = (os.environ.get("IA_IDENTIFIER") or "").strip()
 TITLE = (os.environ.get("IA_TITLE") or "Marcados Pelo Passado").strip()
 
-UPLOAD_PAUSE_SECONDS = int(os.environ.get("UPLOAD_PAUSE_SECONDS") or 120)
-RATE_PAUSE_SECONDS = int(os.environ.get("RATE_PAUSE_SECONDS") or 1800)
-MAX_RATE_HITS = int(os.environ.get("MAX_RATE_HITS") or 3)
+UPLOAD_PAUSE_SECONDS = int(os.environ.get("UPLOAD_PAUSE_SECONDS") or 180)
+RATE_PAUSE_SECONDS = int(os.environ.get("RATE_PAUSE_SECONDS") or 900)
+MAX_RATE_HITS = int(os.environ.get("MAX_RATE_HITS") or 5)
 
 BURST_EVERY = int(os.environ.get("BURST_EVERY") or 10)
-BURST_PAUSE_SECONDS = int(os.environ.get("BURST_PAUSE_SECONDS") or 900)
+BURST_PAUSE_SECONDS = int(os.environ.get("BURST_PAUSE_SECONDS") or 1800)
 
 PEND = "/tmp/videos_pending"
 
@@ -209,6 +209,8 @@ def eh_rate(texto):
             "http error 429",
             "429 too many",
             "503 service unavailable",
+            "total_tasks_queued exceeds global_limit",
+            "global_limit",
         ]
     )
 
@@ -393,6 +395,9 @@ def upload_once(path, nome):
             IDENT,
             [path],
             metadata={"title": TITLE, "mediatype": "movies"},
+            access_key=AK,
+            secret_key=SK,
+            queue_derive=False,
             verbose=False,
         ):
             sc = getattr(resp, "status_code", 0) or 0
@@ -442,12 +447,12 @@ def enviar_com_backoff(path, nome):
             rate_hits += 1
 
             if rate_hits > MAX_RATE_HITS:
-                log("⛔ Rate/spam atingiu o limite de tentativas.")
+                log("⛔ Rate/global_limit atingiu o limite de tentativas.")
                 log("Saindo para não prejudicar a conta nova.")
                 sys.exit(5)
 
             log(
-                f"⚠️ Rate/spam no Archive. Esperando {RATE_PAUSE_SECONDS}s "
+                f"⚠️ Archive pediu redução de fila/global_limit. Esperando {RATE_PAUSE_SECONDS}s "
                 f"e tentando o MESMO arquivo de novo. Tentativa {rate_hits}/{MAX_RATE_HITS}"
             )
             time.sleep(RATE_PAUSE_SECONDS)
@@ -466,7 +471,7 @@ def enviar_com_backoff(path, nome):
         time.sleep(30)
 
 def main():
-    log("WORKER v30 — YouTube -> Archive, yt-dlp corrigido, conta nova, anti-spam")
+    log("WORKER v31 — YouTube -> Archive, queue_derive=False, conta nova, anti-global-limit")
 
     if not AK or not SK:
         log("CRITICO: chaves vazias.")
