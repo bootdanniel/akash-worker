@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sys, time, shutil, subprocess, requests, re
+import os, sys, time, shutil, subprocess, requests, re, importlib.util
 from datetime import datetime
 import internetarchive as ia
 
@@ -43,6 +43,7 @@ FMT = (
 
 ENVIADOS = set()
 FALHAS = []
+YTDLP_CMD = None
 
 def log(m):
     print(f"[worker]: {datetime.now().strftime('%H:%M:%S')} {m}", flush=True)
@@ -90,6 +91,111 @@ def checar_identidade():
     log(f"IA_IDENTIFIER = {IDENT}")
     log(f"IA_TITLE = {TITLE}")
     return user
+
+def run_capture(cmd, timeout=30):
+    try:
+        r = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout
+        )
+        return r.returncode, (r.stdout or "").strip()
+    except Exception as e:
+        return 999, repr(e)[:300]
+
+def ensure_ytdlp():
+    global YTDLP_CMD
+
+    if YTDLP_CMD:
+        return YTDLP_CMD
+
+    candidates = []
+
+    which = shutil.which("yt-dlp")
+    if which:
+        candidates.append(which)
+
+    for p in (
+        "/usr/local/bin/yt-dlp",
+        "/usr/bin/yt-dlp",
+        os.path.expanduser("~/.local/bin/yt-dlp"),
+    ):
+        if os.path.exists(p) and p not in candidates:
+            candidates.append(p)
+
+    for c in candidates:
+        rc, out = run_capture([c, "--version"], timeout=20)
+        if rc == 0:
+            YTDLP_CMD = [c]
+            log(f"yt-dlp encontrado: {c} -> {out[:60]}")
+            return YTDLP_CMD
+
+    if importlib.util.find_spec("yt_dlp"):
+        YTDLP_CMD = [sys.executable, "-m", "yt_dlp"]
+        log("yt-dlp disponível como módulo Python.")
+        return YTDLP_CMD
+
+    target = "/tmp/yt_dlp_libs"
+
+    for extra in (["--break-system-packages"], []):
+        cmd = [
+            sys.executable, "-m", "pip", "install",
+            "--no-cache-dir",
+            *extra,
+            "--target", target,
+            "yt-dlp"
+        ]
+
+        log("Tentando instalar yt-dlp via pip: " + " ".join(cmd))
+        rc, out = run_capture(cmd, timeout=300)
+
+        last = out.splitlines()[-1][:220] if out.strip() else f"rc={rc}"
+        log(f"pip result: {last}")
+
+        if rc == 0:
+            if target not in sys.path:
+                sys.path.insert(0, target)
+
+            os.environ["PYTHONPATH"] = target + os.pathsep + os.environ.get("PYTHONPATH", "")
+            importlib.invalidate_caches()
+
+            if importlib.util.find_spec("yt_dlp"):
+                YTDLP_CMD = [sys.executable, "-m", "yt_dlp"]
+                log("yt-dlp instalado via pip target.")
+                return YTDLP_CMD
+
+    binp = "/tmp/yt-dlp-run"
+
+    try:
+        log("Baixando yt-dlp standalone...")
+        rr = requests.get(
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
+            stream=True,
+            timeout=60,
+            headers={"User-Agent": UA}
+        )
+
+        if rr.ok:
+            with open(binp, "wb") as f:
+                for chunk in rr.iter_content(1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+
+            os.chmod(binp, 0o755)
+
+            for cmd in ([binp], [sys.executable, binp]):
+                rc, out = run_capture(cmd + ["--version"], timeout=30)
+                if rc == 0:
+                    YTDLP_CMD = cmd
+                    log(f"yt-dlp standalone OK: {out[:60]}")
+                    return YTDLP_CMD
+    except Exception as e:
+        log("Erro baixando yt-dlp standalone: " + repr(e)[:250])
+
+    log("CRITICO: yt-dlp indisponível no container.")
+    return None
 
 def eh_rate(texto):
     t = (texto or "").lower()
@@ -140,7 +246,7 @@ def stream_run(cmd):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        bufsize=1,
+        bufsize=1
     )
 
     buf = []
@@ -193,14 +299,16 @@ def numero_do_titulo(titulo, fallback):
     return fallback
 
 def baixar_ep(n):
+    ytdlp = ensure_ytdlp()
+
+    if not ytdlp:
+        return False, "", 0, "sem_ytdlp"
+
     tmp = os.path.join(PEND, f"_dl_{n}")
     shutil.rmtree(tmp, ignore_errors=True)
     os.makedirs(tmp, exist_ok=True)
 
-    base = [
-        sys.executable,
-        "-m",
-        "yt_dlp",
+    base = ytdlp + [
         "--no-warnings",
         "--no-progress",
         "--newline",
@@ -358,7 +466,7 @@ def enviar_com_backoff(path, nome):
         time.sleep(30)
 
 def main():
-    log("WORKER v29 — YouTube -> Archive, conta nova, anti-conta-antiga, throttle anti-spam")
+    log("WORKER v30 — YouTube -> Archive, yt-dlp corrigido, conta nova, anti-spam")
 
     if not AK or not SK:
         log("CRITICO: chaves vazias.")
@@ -378,6 +486,11 @@ def main():
     log(f"UPLOAD_PAUSE_SECONDS = {UPLOAD_PAUSE_SECONDS}")
     log(f"RATE_PAUSE_SECONDS = {RATE_PAUSE_SECONDS}")
     log(f"BURST_EVERY = {BURST_EVERY}, BURST_PAUSE_SECONDS = {BURST_PAUSE_SECONDS}")
+
+    ytdlp = ensure_ytdlp()
+    if not ytdlp:
+        log("⛔ Sem yt-dlp. Encerrando.")
+        sys.exit(6)
 
     os.makedirs(PEND, exist_ok=True)
 
