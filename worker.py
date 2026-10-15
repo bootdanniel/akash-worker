@@ -3,6 +3,11 @@ import os, sys, time, shutil, subprocess, requests, re
 from datetime import datetime
 import internetarchive as ia
 
+AK = (os.environ.get("IA_ACCESS_KEY") or "").strip()
+SK = (os.environ.get("IA_SECRET_KEY") or "").strip()
+
+EXPECTED_USERNAME = (os.environ.get("EXPECTED_USERNAME") or "").strip().lower()
+
 PLAYLIST_URL = (
     os.environ.get("PLAYLIST_URL")
     or "https://www.youtube.com/playlist?list=PLkbr4tX7v1Eehwa9zU55PatmrrcFufzz3"
@@ -11,32 +16,42 @@ PLAYLIST_URL = (
 EP_START = int(os.environ.get("EP_START") or 1)
 EP_END = int(os.environ.get("EP_END") or 128)
 
-IDENT = (
-    os.environ.get("IA_IDENTIFIER")
-    or "michaeline1dc92f-s8-pointnexus-org-marcados-pelo-passado"
-).strip()
-
+IDENT = (os.environ.get("IA_IDENTIFIER") or "").strip()
 TITLE = (os.environ.get("IA_TITLE") or "Marcados Pelo Passado").strip()
 
-YTDLP = "yt-dlp"
-FMT = "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*[height<=720]+ba/b"
+UPLOAD_PAUSE_SECONDS = int(os.environ.get("UPLOAD_PAUSE_SECONDS") or 120)
+RATE_PAUSE_SECONDS = int(os.environ.get("RATE_PAUSE_SECONDS") or 1800)
+MAX_RATE_HITS = int(os.environ.get("MAX_RATE_HITS") or 3)
+
+BURST_EVERY = int(os.environ.get("BURST_EVERY") or 10)
+BURST_PAUSE_SECONDS = int(os.environ.get("BURST_PAUSE_SECONDS") or 900)
+
 PEND = "/tmp/videos_pending"
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
+
+FMT = (
+    "b[ext=mp4][height<=720]/"
+    "b[ext=mp4]/"
+    "bv*[height<=720][ext=mp4]+ba[ext=m4a]/"
+    "b"
+)
 
 ENVIADOS = set()
 FALHAS = []
-FATAL_WRITE = False
-block_streak = 0
 
 def log(m):
     print(f"[worker]: {datetime.now().strftime('%H:%M:%S')} {m}", flush=True)
 
-def garantir_ini():
-    ak = (os.environ.get("IA_ACCESS_KEY") or "").strip()
-    sk = (os.environ.get("IA_SECRET_KEY") or "").strip()
+def sanitize(s):
+    return re.sub(r'[^a-zA-Z0-9_-]', '-', (s or "").strip()).strip('-')
 
-    if not ak or not sk:
+def garantir_ini():
+    if not AK or not SK:
         log("CRITICO: IA_ACCESS_KEY / IA_SECRET_KEY vazias.")
         return False
 
@@ -45,13 +60,53 @@ def garantir_ini():
 
     with open(cfg, "w", encoding="utf-8") as f:
         f.write("[s3]\n")
-        f.write(f"access = {ak}\n")
-        f.write(f"secret = {sk}\n")
+        f.write(f"access = {AK}\n")
+        f.write(f"secret = {SK}\n")
 
-    log("ia.ini gravado.")
+    log("ia.ini regravado com as chaves do deploy.")
     return True
 
-def eh_acesso_negado(texto):
+def checar_identidade():
+    global IDENT
+
+    try:
+        user = ia.get_username(AK, SK)
+    except Exception as e:
+        log(f"CRITICO: get_username falhou: {repr(e)[:350]}")
+        return None
+
+    log(f"DONO DA CHAVE = {user!r}")
+
+    if EXPECTED_USERNAME and user.strip().lower() != EXPECTED_USERNAME:
+        log("CRITICO: a chave NÃO pertence à conta esperada.")
+        log(f"Esperado: {EXPECTED_USERNAME}")
+        log(f"Encontrado: {user}")
+        log("Encerrando para não usar conta antiga por engano.")
+        return None
+
+    if not IDENT:
+        IDENT = f"{sanitize(user)}-marcados-pelo-passado"
+
+    log(f"IA_IDENTIFIER = {IDENT}")
+    log(f"IA_TITLE = {TITLE}")
+    return user
+
+def eh_rate(texto):
+    t = (texto or "").lower()
+    return any(
+        s in t
+        for s in [
+            "reduce your request rate",
+            "appears to be spam",
+            "rate limit",
+            "too many requests",
+            "http error 429",
+            "429 too many",
+            "503 service unavailable",
+        ]
+    )
+
+def eh_denied(texto):
     t = (texto or "").lower()
     return any(
         s in t
@@ -61,6 +116,7 @@ def eh_acesso_negado(texto):
             "usernamecanwrite",
             "invalidaccesskeyid",
             "signaturedoesnotmatch",
+            "forbidden",
         ]
     )
 
@@ -142,14 +198,17 @@ def baixar_ep(n):
     os.makedirs(tmp, exist_ok=True)
 
     base = [
-        YTDLP,
+        sys.executable,
+        "-m",
+        "yt_dlp",
         "--no-warnings",
         "--no-progress",
         "--newline",
+        "--user-agent", UA,
         "-f", FMT,
         "--merge-output-format", "mp4",
         "-o", os.path.join(tmp, "v.%(ext)s"),
-        "--download",
+        "--no-simulate",
         "--print", "%(title)s",
         "--retries", "5",
         "--fragment-retries", "5",
@@ -181,6 +240,7 @@ def baixar_ep(n):
             or "error" in low
             or "warning" in low
             or "yt-dlp" in low
+            or "ytdlp" in low
         ):
             continue
 
@@ -217,97 +277,117 @@ def baixar_ep(n):
 
     return True, titulo, os.path.getsize(destino), ""
 
-def upload_arquivo(path, nome_log):
-    global FATAL_WRITE
+def upload_once(path, nome):
+    statuses = []
 
-    ultimo = ""
+    try:
+        for resp in ia.upload(
+            IDENT,
+            [path],
+            metadata={"title": TITLE, "mediatype": "movies"},
+            verbose=False,
+        ):
+            sc = getattr(resp, "status_code", 0) or 0
 
-    for usar_derive in (True, False):
-        try:
-            kw = {
-                "metadata": {"title": TITLE, "mediatype": "movies"},
-                "verbose": False,
-            }
+            try:
+                sc = int(sc)
+            except Exception:
+                sc = 0
 
-            if not usar_derive:
-                kw["queue_derive"] = False
+            statuses.append(sc)
+            log(f"    Archive.org HTTP {sc} {nome}")
 
-            statuses = []
+            if sc in (429, 503):
+                return "RATE"
 
-            for resp in ia.upload(IDENT, [path], **kw):
-                sc = getattr(resp, "status_code", 0) or 0
-                statuses.append(sc)
-                log(f"    Archive.org HTTP {sc} {nome_log}")
+            if sc in (401, 403):
+                return "DENIED"
 
-            if statuses and all(200 <= sc < 400 for sc in statuses):
-                return True
+        if statuses and all(200 <= s < 400 for s in statuses):
+            return "OK"
 
-            ultimo = f"status={statuses}"
+        return "FAIL"
 
-            if any(sc in (401, 403) for sc in statuses):
-                continue
+    except Exception as e:
+        txt = repr(e)
+        log(f"    upload {nome}: {txt[:350]}")
 
-        except Exception as e:
-            ultimo = repr(e)
-            log(f"    upload {nome_log} modo_derive={usar_derive}: {ultimo[:350]}")
+        if eh_rate(txt):
+            return "RATE"
 
-            if eh_acesso_negado(ultimo):
-                continue
+        if eh_denied(txt):
+            return "DENIED"
 
-    if eh_acesso_negado(ultimo):
-        FATAL_WRITE = True
-        log("    ❌ Access Denied. Parando para não gastar download à toa.")
+        return "FAIL"
 
-    return False
+def enviar_com_backoff(path, nome):
+    rate_hits = 0
+    fail_attempts = 0
 
-def teste_escrita_minima():
-    os.makedirs(PEND, exist_ok=True)
+    while True:
+        res = upload_once(path, nome)
 
-    path = os.path.join(PEND, "_write_ok.txt")
+        if res == "OK":
+            return True
 
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("write test ok\n")
+        if res == "RATE":
+            rate_hits += 1
 
-    log(f"Testando escrita mínima no item: {IDENT}")
+            if rate_hits > MAX_RATE_HITS:
+                log("⛔ Rate/spam atingiu o limite de tentativas.")
+                log("Saindo para não prejudicar a conta nova.")
+                sys.exit(5)
 
-    ok = upload_arquivo(path, "_write_ok.txt")
+            log(
+                f"⚠️ Rate/spam no Archive. Esperando {RATE_PAUSE_SECONDS}s "
+                f"e tentando o MESMO arquivo de novo. Tentativa {rate_hits}/{MAX_RATE_HITS}"
+            )
+            time.sleep(RATE_PAUSE_SECONDS)
+            continue
 
-    if ok:
-        log("✅ Escrita mínima OK. Não vou apagar _write_ok.txt.")
-        return True
+        if res == "DENIED":
+            log("⛔ Acesso negado pelo Archive. Encerrando.")
+            sys.exit(3)
 
-    if FATAL_WRITE:
-        log("CRITICO: item recusou escrita. Provável bloqueio temporário da conta/chave.")
-    else:
-        log("CRITICO: teste de escrita mínima falhou.")
+        fail_attempts += 1
 
-    return False
+        if fail_attempts >= 3:
+            return False
+
+        log(f"⚠️ Falha comum no upload. Tentando de novo em 30s ({fail_attempts}/3).")
+        time.sleep(30)
 
 def main():
-    global block_streak
+    log("WORKER v29 — YouTube -> Archive, conta nova, anti-conta-antiga, throttle anti-spam")
 
-    log(
-        f"WORKER v28 — YouTube playlist -> Archive | item={IDENT} | "
-        f"eps {EP_START}..{EP_END}"
-    )
-
-    tunnel = (os.environ.get("TUNNEL_URL") or "").strip()
-    log(f"TUNNEL_URL (ponte) = {tunnel or '(não usada para YouTube; yt-dlp vai direto)'}")
+    if not AK or not SK:
+        log("CRITICO: chaves vazias.")
+        sys.exit(1)
 
     if not garantir_ini():
         sys.exit(1)
 
-    os.makedirs(PEND, exist_ok=True)
+    user = checar_identidade()
+    if not user:
+        sys.exit(1)
 
-    if not teste_escrita_minima():
-        log("⛔ Não vou baixar episódios porque a escrita mínima falhou.")
-        log("Feche este deploy e espere um pouco, ou use outra chave/conta/item.")
-        sys.exit(2)
+    tunnel = (os.environ.get("TUNNEL_URL") or "").strip()
+    log(f"TUNNEL_URL opcional = {tunnel or '(não definida; YouTube usa conexão direta do Akash)'}")
+    log(f"PLAYLIST_URL = {PLAYLIST_URL}")
+    log(f"EP_START..EP_END = {EP_START}..{EP_END}")
+    log(f"UPLOAD_PAUSE_SECONDS = {UPLOAD_PAUSE_SECONDS}")
+    log(f"RATE_PAUSE_SECONDS = {RATE_PAUSE_SECONDS}")
+    log(f"BURST_EVERY = {BURST_EVERY}, BURST_PAUSE_SECONDS = {BURST_PAUSE_SECONDS}")
+
+    os.makedirs(PEND, exist_ok=True)
 
     ENVIADOS.update(listar_existentes())
 
     if ENVIADOS:
         log(f"ℹ️ já no item (metadata): {len(ENVIADOS)} mp4")
+
+    block_streak = 0
+    success_count = 0
 
     while True:
         faltam = [
@@ -323,18 +403,14 @@ def main():
         log(f"📋 Faltam {len(faltam)} posições.")
 
         for n in faltam:
-            if FATAL_WRITE:
-                log("⛔ Parando ciclo por erro de escrita.")
-                sys.exit(3)
-
-            nome = nome_ep(n)
-
             free = shutil.disk_usage(PEND).free
 
             if free < 2_000_000_000:
                 log(f"⚠️ Espaço baixo: {free // 1024 // 1024} MB livres. Esperando 5 min.")
                 time.sleep(300)
                 break
+
+            nome = nome_ep(n)
 
             ok, titulo, sz, motivo = baixar_ep(n)
 
@@ -345,8 +421,8 @@ def main():
                 if motivo == "block_youtube":
                     block_streak += 1
 
-                    if block_streak >= 4:
-                        log("⛔ YouTube bloqueando o IP (4 falhas seguidas de bot/403). Parando.")
+                    if block_streak >= 3:
+                        log("⛔ YouTube bloqueando o IP do Akash (3 falhas seguidas). Parando.")
                         sys.exit(4)
                 else:
                     block_streak = 0
@@ -360,14 +436,11 @@ def main():
             log(f"✅ baixado [{n}] {titulo!r} ({sz / 1024 / 1024:.1f} MB)")
 
             if num_titulo != n:
-                log(
-                    f"⚠️ atenção: título diz episódio {num_titulo}, "
-                    f"mas posição da playlist é {n}"
-                )
+                log(f"⚠️ atenção: título diz episódio {num_titulo}, mas posição da playlist é {n}")
 
             path = os.path.join(PEND, nome)
 
-            if upload_arquivo(path, nome):
+            if enviar_com_backoff(path, nome):
                 ENVIADOS.add(nome)
 
                 try:
@@ -375,8 +448,14 @@ def main():
                 except OSError:
                     pass
 
+                success_count += 1
                 log(f"✅ ENVIADO [{n}] {nome}")
-                time.sleep(10)
+
+                if success_count % BURST_EVERY == 0:
+                    log(f"⏸ Pausa anti-spam após {success_count} uploads: {BURST_PAUSE_SECONDS}s")
+                    time.sleep(BURST_PAUSE_SECONDS)
+                else:
+                    time.sleep(UPLOAD_PAUSE_SECONDS)
             else:
                 try:
                     os.remove(path)
@@ -384,12 +463,9 @@ def main():
                     pass
 
                 FALHAS.append((n, "upload"))
+                log(f"❌ FALHOU upload [{n}] {nome}")
 
-                if FATAL_WRITE:
-                    log("⛔ Access Denied detectado. Encerrando para não repetir downloads.")
-                    sys.exit(3)
-
-        log("⏸ varredura completa; espera 5 min e repete só as não enviadas.")
+        log("⏸ Varredura completa; espera 5 min e repete só as não enviadas.")
         time.sleep(300)
 
 if __name__ == "__main__":
