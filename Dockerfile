@@ -18,6 +18,7 @@ RUN pip3 install --break-system-packages requests
 
 WORKDIR /app
 RUN python3 -m pip install --break-system-packages --no-cache-dir internetarchive
+RUN curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp
 COPY worker.py /app/worker.py
 
 CMD ["python3", "-u", "/app/worker.py"]

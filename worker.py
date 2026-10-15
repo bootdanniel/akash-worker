@@ -1,269 +1,178 @@
 #!/usr/bin/env python3
-import os, sys, time, shutil, requests
+import os, sys, time, shutil, subprocess, requests
 from datetime import datetime
 import internetarchive as ia
 
-IDENT = (
-    os.environ.get("IA_IDENTIFIER")
-    or "michaeline1dc92f-s8-pointnexus-org-la-casa-de-papel-24h-parte5-final-2"
-).strip()
+PLAYLIST_URL = (os.environ.get("PLAYLIST_URL") or
+    "https://www.youtube.com/playlist?list=PLkbr4tX7v1Eehwa9zU55PatmrrcFufzz3").strip()
+EP_START = int(os.environ.get("EP_START") or 1)
+EP_END   = int(os.environ.get("EP_END") or 128)
 
-TITLE = (os.environ.get("IA_TITLE") or "lá casa papel.. parte 5 final").strip()
-TMDB = "71446"
+IDENT = (os.environ.get("IA_IDENTIFIER") or
+    "michaeline1dc92f-s8-pointnexus-org-marcados-pelo-passado").strip()
+TITLE = (os.environ.get("IA_TITLE") or "Marcados Pelo Passado").strip()
+
+YTDLP = "yt-dlp"
+FMT = "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*[height<=720]+ba/b"
 PEND = "/tmp/videos_pending"
-
-MAPA = {
-    "La_Casa_de_Papel_S05E06.mp4": (6, 1),
-    "La_Casa_de_Papel_S05E07.mp4": (6, 2),
-    "La_Casa_de_Papel_S05E08.mp4": (6, 3),
-    "La_Casa_de_Papel_S05E09.mp4": (6, 4),
-    "La_Casa_de_Papel_S05E10.mp4": (6, 5),
-}
-
-ENVIADOS = set()
-FATAL_WRITE = False
-
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
-def log(m):
-    print(f"[worker]: {datetime.now().strftime('%H:%M:%S')} {m}", flush=True)
+ENVIADOS = set()
+FALHAS = []          # (n, motivo)
+FATAL_WRITE = False
+block_streak = 0
+
+def log(m): print(f"[worker]: {datetime.now().strftime('%H:%M:%S')} {m}", flush=True)
 
 def garantir_ini():
     ak = (os.environ.get("IA_ACCESS_KEY") or "").strip()
     sk = (os.environ.get("IA_SECRET_KEY") or "").strip()
-
     if not ak or not sk:
-        log("CRITICO: IA_ACCESS_KEY / IA_SECRET_KEY vazias.")
-        return False
-
+        log("CRITICO: chaves vazias."); return False
     cfg = os.path.expanduser("~/.config/ia.ini")
     os.makedirs(os.path.dirname(cfg), exist_ok=True)
+    open(cfg, "w").write(f"[s3]\naccess = {ak}\nsecret = {sk}\n")
+    log("ia.ini gravado."); return True
 
-    with open(cfg, "w", encoding="utf-8") as f:
-        f.write("[s3]\n")
-        f.write(f"access = {ak}\n")
-        f.write(f"secret = {sk}\n")
+def eh_acesso_negado(t):
+    t = (t or "").lower()
+    return any(s in t for s in ["access denied","sufficient privileges","usernamecanwrite",
+                                "invalidaccesskeyid","signaturedoesnotmatch"])
 
-    log("ia.ini gravado.")
-    return True
+def eh_block_yt(t):
+    t = (t or "").lower()
+    return any(s in t for s in ["not a bot","sign in to confirm","captcha","http error 403",
+                                "precondition failed","please sign in"])
 
-def eh_acesso_negado(texto):
-    t = (texto or "").lower()
-    return (
-        "access denied" in t
-        or "sufficient privileges" in t
-        or "usernamecanwrite" in t
-        or "invalidaccesskeyid" in t
-        or "signaturedoesnotmatch" in t
-    )
+def stream_run(cmd):
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, bufsize=1)
+    buf = []
+    for line in p.stdout:
+        s = line.rstrip("\n")
+        if s:
+            log("    ytdlp| " + s[:240]); buf.append(s)
+    p.wait()
+    return p.returncode, "\n".join(buf)
 
-def pedir_link(tunnel, t, e):
-    url = f"{tunnel.rstrip('/')}/resolver/{TMDB}/{t}/{e}"
+def listar_existentes():
+    try:
+        r = requests.get(f"https://archive.org/metadata/{IDENT}", timeout=30)
+        if r.status_code != 200: return set()
+        return {f.get("name") for f in (r.json().get("files") or [])
+                if str(f.get("name","")).lower().endswith(".mp4")}
+    except Exception as e:
+        log(f"⚠️ listar: {repr(e)[:200]}"); return set()
 
-    for i in range(1, 4):
-        try:
-            d = requests.get(url, timeout=120).json()
-            if d.get("mp4"):
-                return d["mp4"]
-            log(f"    ponte sem link {i}: {d}")
-        except Exception as ex:
-            log(f"    erro ponte {i}: {repr(ex)[:250]}")
+def nome_ep(n): return f"Marcados_Pelo_Passado_E{n:03d}.mp4"
 
-        time.sleep(15)
+def baixar_ep(n):
+    """Baixa a posição n da playlist. Retorna (ok, titulo, tamanho, motivo)."""
+    tmp = os.path.join(PEND, f"_dl_{n}")
+    shutil.rmtree(tmp, ignore_errors=True); os.makedirs(tmp, exist_ok=True)
+    base = [YTDLP, "--no-warnings", "--no-progress", "--newline",
+            "-f", FMT, "--merge-output-format", "mp4",
+            "-o", os.path.join(tmp, "v.%(ext)s"),
+            "--print", "%(title)s",
+            "--playlist-items", str(n), PLAYLIST_URL]
+    rc, out = stream_run(base)
+    if rc != 0 and eh_block_yt(out):
+        log("    retry com player_client alternativo...")
+        rc, out = stream_run(base + ["--extractor-args", "youtube:player_client=tv,android"])
+    # titulo = 1a linha que nao parece log de erro/progresso
+    titulo = ""
+    for l in out.splitlines():
+        ls = l.strip()
+        if not ls or ls.startswith("[") or "error" in ls.lower() or "yt-dlp" in ls.lower():
+            continue
+        titulo = ls; break
+    arq = None
+    if os.path.isdir(tmp):
+        for f in sorted(os.listdir(tmp)):
+            if f.lower().endswith(".mp4"): arq = os.path.join(tmp, f); break
+        if arq is None:
+            fs = os.listdir(tmp); arq = os.path.join(tmp, fs[0]) if fs else None
+    if rc != 0 or arq is None:
+        shutil.rmtree(tmp, ignore_errors=True)
+        motivo = "block_youtube" if eh_block_yt(out) else (out.splitlines()[-1][:160] if out.strip() else "sem arquivo")
+        return False, titulo, 0, motivo
+    destino = os.path.join(PEND, nome_ep(n))
+    os.replace(arq, destino); shutil.rmtree(tmp, ignore_errors=True)
+    return True, titulo, os.path.getsize(destino), ""
 
-    return None
-
-def baixar(url, destino):
-    r = requests.get(url, stream=True, timeout=(30, 300), headers={"User-Agent": UA})
-    r.raise_for_status()
-
-    total = int(r.headers.get("content-length", 0))
-    baix = 0
-    ult = 0
-    part = destino + ".part"
-
-    with open(part, "wb") as f:
-        for c in r.iter_content(4 * 1024 * 1024):
-            if c:
-                f.write(c)
-                baix += len(c)
-
-                if total:
-                    p = int(baix * 100 / total)
-                    if p >= ult + 5:
-                        print(
-                            f"\r[worker]:     {p}% ({baix // 1024 // 1024}/{total // 1024 // 1024} MB)",
-                            end="",
-                            flush=True
-                        )
-                        ult = p
-
-    print("", flush=True)
-    os.replace(part, destino)
-    return baix
-
-def upload_arquivo(path, nome_log):
+def subir(path, nome):
     global FATAL_WRITE
-
     ultimo = ""
-
-    for tent in range(1, 4):
+    for usar_derive in (True, False):   # True=padrao, False=queue_derive=False
         try:
-            statuses = []
-
-            for resp in ia.upload(
-                IDENT,
-                [path],
-                metadata={"title": TITLE, "mediatype": "movies"},
-                queue_derive=False,
-                verbose=False
-            ):
-                sc = getattr(resp, "status_code", 0) or 0
-                statuses.append(sc)
-                log(f"    Archive.org HTTP {sc} {nome_log}")
-
-            if statuses and all(200 <= sc < 400 for sc in statuses):
+            kw = {"metadata": {"title": TITLE, "mediatype": "movies"}, "verbose": False}
+            if not usar_derive: kw["queue_derive"] = False
+            sts = []
+            for resp in ia.upload(IDENT, [path], **kw):
+                sc = getattr(resp, "status_code", 0) or 0; sts.append(sc)
+                log(f"    Archive.org HTTP {sc} {nome}")
+            if sts and all(200 <= s < 400 for s in sts):
                 return True
-
-            if any(sc in (401, 403) for sc in statuses):
-                FATAL_WRITE = True
-                ultimo = f"status={statuses}"
-                log("    ❌ 401/403 do Archive.org. Parando para não gastar download.")
-                return False
-
-            ultimo = f"status={statuses}"
-
+            ultimo = f"status={sts}"
+            if any(s in (401, 403) for s in sts):
+                continue   # tenta o outro modo de derive
         except Exception as e:
-            ultimo = repr(e)
-            log(f"    upload {nome_log} tent {tent}/3: {ultimo[:350]}")
-
+            ultimo = repr(e); log(f"    upload {nome} modo_derive={usar_derive}: {ultimo[:300]}")
             if eh_acesso_negado(ultimo):
-                FATAL_WRITE = True
-                log("    ❌ Access Denied. Parando para não baixar os próximos à toa.")
-                return False
-
-        time.sleep(15 * tent)
-
-    log(f"    ❌ {nome_log} falhou definitivamente: {ultimo[:450]}")
-    return False
-
-def teste_escrita_minima():
-    global FATAL_WRITE
-
-    os.makedirs(PEND, exist_ok=True)
-    path = os.path.join(PEND, "_write_ok.txt")
-
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("write test ok\n")
-
-    log(f"Testando escrita mínima no item: {IDENT}")
-
-    ok = upload_arquivo(path, "_write_ok.txt")
-
-    if ok:
-        log("✅ Escrita mínima OK. O item aceita upload. Não vou apagar _write_ok.txt.")
-        return True
-
-    if FATAL_WRITE:
-        log("CRITICO: item novo também recusou escrita. Provável bloqueio temporário da conta/chave ou item queimado.")
-        return False
-
-    log("CRITICO: teste de escrita mínima falhou sem Access Denied explícito.")
+                continue
+    if eh_acesso_negado(ultimo):
+        FATAL_WRITE = True
+        log("    ❌ Access Denied nos dois modos. Parando por bloqueio de escrita.")
     return False
 
 def main():
-    log("WORKER v26 — La Casa 5 finais, item novo, teste de escrita sem apagar, para em Access Denied")
-
-    tunnel = (os.environ.get("TUNNEL_URL") or "").strip().rstrip("/")
-
-    if not tunnel:
-        log("CRITICO: TUNNEL_URL vazia.")
-        sys.exit(1)
-
-    log(f"TUNNEL_URL = {tunnel}")
-    log(f"IA_IDENTIFIER = {IDENT}")
-    log(f"IA_TITLE = {TITLE}")
-
-    if not garantir_ini():
-        sys.exit(1)
-
-    if not teste_escrita_minima():
-        log("⛔ Não vou baixar episódios porque a escrita mínima falhou.")
-        log("Feche este deploy e espere um pouco, ou use outra chave/conta/item.")
-        sys.exit(2)
-
+    global block_streak
+    log(f"WORKER v27 — YouTube playlist -> Archive | item={IDENT} | eps {EP_START}..{EP_END}")
+    tunnel = (os.environ.get("TUNNEL_URL") or "").strip()
+    log(f"TUNNEL_URL (ponte) = {tunnel or '(nao usada no download do YT; yt-dlp vai direto)'}")
+    if not garantir_ini(): sys.exit(1)
     os.makedirs(PEND, exist_ok=True)
 
+    ENVIADOS.update(listar_existentes())
+    if ENVIADOS: log(f"ℹ️ ja no item (metadata): {len(ENVIADOS)} mp4")
+
     while True:
-        pend = [(n, t, e) for n, (t, e) in MAPA.items() if n not in ENVIADOS]
-
-        if not pend:
-            log("✅ 5/5 enviados. Pode fechar o deploy do Akash.")
+        faltam = [n for n in range(EP_START, EP_END+1) if nome_ep(n) not in ENVIADOS]
+        if not faltam:
+            log(f"✅ Completo {EP_END-EP_START+1}/{EP_END-EP_START+1}. Pode fechar o deploy.")
             time.sleep(86400)
-
-        log(f"📋 Faltam {len(pend)} episódios neste container.")
-
-        for nome, t, e in pend:
-            if FATAL_WRITE:
-                log("⛔ Parando ciclo por erro de escrita.")
-                sys.exit(3)
-
-            free = shutil.disk_usage(PEND).free
-
-            if free < 2_000_000_000:
-                log(f"⚠️ Espaço baixo: {free // 1024 // 1024} MB livres. Esperando 5 min.")
-                time.sleep(300)
-                break
-
-            log(f"── {nome} ← fonte T{t:02d}E{e:02d} ──")
-
-            link = pedir_link(tunnel, t, e)
-
-            if not link:
-                log("❌ Sem link, pulando por enquanto.")
+        log(f"📋 Faltam {len(faltam)} posicoes.")
+        for n in faltam:
+            if FATAL_WRITE: sys.exit(3)
+            nome = nome_ep(n)
+            if shutil.disk_usage(PEND).free < 2_000_000_000:
+                log("⚠️ disco baixo, espera 5min."); time.sleep(300); break
+            ok, titulo, sz, motivo = baixar_ep(n)
+            if not ok:
+                log(f"❌ [{n}] download falhou: {motivo}")
+                FALHAS.append((n, motivo))
+                if motivo == "block_youtube":
+                    block_streak += 1
+                    if block_streak >= 4:
+                        log("⛔ YouTube bloqueando o IP (4 falhas seguidas de bot/403). Parando."); sys.exit(4)
+                else:
+                    block_streak = 0
                 continue
-
-            destino = os.path.join(PEND, nome)
-
-            try:
-                sz = baixar(link, destino)
-                log(f"✅ baixado {nome} ({sz / 1024 / 1024:.1f} MB)")
-            except Exception as ex:
-                log(f"❌ falha baixando {nome}: {repr(ex)[:350]}")
-
-                for sx in ("", ".part"):
-                    p = destino + sx
-                    if os.path.exists(p):
-                        try:
-                            os.remove(p)
-                        except OSError:
-                            pass
-
-                continue
-
-            if upload_arquivo(destino, nome):
+            block_streak = 0
+            log(f"✅ baixado [{n}] {titulo!r} ({sz/1024/1024:.1f} MB)")
+            path = os.path.join(PEND, nome)
+            if subir(path, nome):
                 ENVIADOS.add(nome)
-
-                try:
-                    os.remove(destino)
-                except OSError:
-                    pass
-
-                log(f"✅ ENVIADO {nome}")
+                try: os.remove(path)
+                except OSError: pass
+                log(f"✅ ENVIADO [{n}] {nome}")
                 time.sleep(10)
             else:
-                try:
-                    os.remove(destino)
-                except OSError:
-                    pass
-
-                log(f"❌ FALHOU upload de {nome}")
-
-                if FATAL_WRITE:
-                    log("⛔ Access Denied detectado. Encerrando para não repetir downloads.")
-                    sys.exit(3)
-
-        log("⏸ Passou pelos pendentes. Esperando 5 min antes de repetir só os não enviados.")
+                try: os.remove(path)
+                except OSError: pass
+                FALHAS.append((n, "upload"))
+                if FATAL_WRITE: sys.exit(3)
+        log("⏸ varredura completa; espera 5min e repete so as nao enviadas.")
         time.sleep(300)
 
 if __name__ == "__main__":
